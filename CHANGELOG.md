@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2024-01-02
+
+### Added
+- **Optional record headers**: Each record can now include optional metadata headers up to 64KB in size
+- **Enhanced record format**: New format `[NANORC:6][header_length:2][header:H][content_length:8][content:M]` with 6-byte signature
+- **Header validation**: Automatic validation of header size limits with descriptive error messages
+- **Comprehensive examples**: Three detailed examples demonstrating real-world usage patterns:
+  - Event Sourcing with CQRS pattern (`examples/event_sourcing_cqrs.rs`)
+  - Distributed Messaging System (`examples/distributed_messaging.rs`) 
+  - Real-time Analytics Pipeline (`examples/realtime_analytics.rs`)
+
+### Changed
+- **BREAKING: Method signatures updated** - All `append_entry` and `log_entry` methods now require a `header: Option<Bytes>` parameter
+- **BREAKING: Record signature changed** - Updated from `NANO-REC` (8 bytes) to `NANORC` (6 bytes)
+- **BREAKING: Record format modified** - Added header length and optional header fields before content
+- **Enhanced API flexibility** - Headers enable rich metadata storage for advanced use cases
+
+### Technical Details
+- **Header storage**: Headers are stored immediately after the 6-byte signature and 2-byte length field
+- **Size limitation**: Headers are limited to 65,535 bytes (64KB - 1) for efficient storage
+- **Backward compatibility**: Use `None` for header parameter to maintain previous behavior
+- **Performance impact**: Minimal overhead for records without headers (2-byte length field)
+- **Use cases**: Enables event sourcing, message routing, correlation tracking, and metadata storage
+
+### Examples Added
+- **Event Sourcing**: Complete CQRS implementation with domain events and aggregate reconstruction
+- **Message Broker**: Topic partitioning, routing, acknowledgments, and dead letter queue handling
+- **Analytics**: High-frequency event ingestion, real-time metrics, and deduplication
+
+### Migration Notes
+- **API update required**: Add `None` as the second parameter to all `append_entry` and `log_entry` calls
+- **File format change**: New record format is incompatible with previous versions
+- **Enhanced capabilities**: Headers enable sophisticated metadata tracking and system coordination
+
 ## [0.3.0] - 2025-09-07
 
 ### Added
@@ -145,7 +179,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Audit logging with time-based retention
 - Cache warming and persistence
 
-[Unreleased]: https://github.com/yourusername/nano-wal/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/yourusername/nano-wal/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/yourusername/nano-wal/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/yourusername/nano-wal/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/yourusername/nano-wal/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/yourusername/nano-wal/compare/v0.1.0...v0.1.1

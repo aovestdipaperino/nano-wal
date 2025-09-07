@@ -12,8 +12,8 @@ use std::time::Duration;
 /// The UTF-8 'NANO-LOG' signature for segment file headers
 const NANO_LOG_SIGNATURE: [u8; 8] = [b'N', b'A', b'N', b'O', b'-', b'L', b'O', b'G'];
 
-/// The UTF-8 'NANO-REC' signature for individual records
-const NANO_REC_SIGNATURE: [u8; 8] = [b'N', b'A', b'N', b'O', b'-', b'R', b'E', b'C'];
+/// The UTF-8 'NANORC' signature for individual records
+const NANO_REC_SIGNATURE: [u8; 6] = [b'N', b'A', b'N', b'O', b'R', b'C'];
 
 /// A reference to a specific entry location in the WAL
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -294,6 +294,7 @@ impl Wal {
     /// # Arguments
     ///
     /// * `key` - The key of the entry.
+    /// * `header` - Optional header for the entry (max 64KB).
     /// * `content` - The content of the entry.
     /// * `durable` - Whether to ensure the entry is persisted to disk before returning.
     ///
@@ -303,6 +304,7 @@ impl Wal {
     pub fn append_entry<K: Hash + AsRef<[u8]> + Display>(
         &mut self,
         key: K,
+        header: Option<Bytes>,
         content: Bytes,
         durable: bool,
     ) -> io::Result<EntryRef> {
@@ -315,9 +317,25 @@ impl Wal {
         let file_header_size = 8 + 8 + 8 + 8 + key.as_ref().len() as u64; // NANO-LOG + sequence + expiration + key_len + key
         let entry_offset = current_position - file_header_size;
 
-        // Write entry: NANO-REC signature + content_length + content
+        // Write entry: NANORC signature + header_length + header + content_length + content
         active_segment.file.write_all(&NANO_REC_SIGNATURE)?;
 
+        // Write header length and header
+        let header_len = header.as_ref().map(|h| h.len()).unwrap_or(0);
+        if header_len > 65535 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Header size cannot exceed 64KB",
+            ));
+        }
+        active_segment
+            .file
+            .write_all(&(header_len as u16).to_le_bytes())?;
+        if let Some(header_bytes) = &header {
+            active_segment.file.write_all(header_bytes.as_ref())?;
+        }
+
+        // Write content length and content
         let content_len = content.len() as u64;
         active_segment.file.write_all(&content_len.to_le_bytes())?;
         active_segment.file.write_all(content.as_ref())?;
@@ -446,8 +464,8 @@ impl Wal {
 
         // Read records until end of file
         loop {
-            // Try to read NANO-REC signature
-            let mut signature_buf = [0u8; 8];
+            // Try to read NANORC signature
+            let mut signature_buf = [0u8; 6];
             match file.read_exact(&mut signature_buf) {
                 Ok(_) => {
                     if signature_buf != NANO_REC_SIGNATURE {
@@ -455,6 +473,18 @@ impl Wal {
                     }
                 }
                 Err(_) => break, // End of file
+            }
+
+            // Read header length
+            let mut header_len_bytes = [0u8; 2];
+            if file.read_exact(&mut header_len_bytes).is_err() {
+                break;
+            }
+            let header_len = u16::from_le_bytes(header_len_bytes);
+
+            // Skip header
+            if file.seek(SeekFrom::Current(header_len as i64)).is_err() {
+                break;
             }
 
             // Read content length
@@ -465,12 +495,12 @@ impl Wal {
             let content_len = u64::from_le_bytes(content_len_bytes);
 
             // Read content
-            let mut content_bytes = vec![0u8; content_len as usize];
-            if file.read_exact(&mut content_bytes).is_err() {
+            let mut content = vec![0u8; content_len as usize];
+            if file.read_exact(&mut content).is_err() {
                 break;
             }
 
-            records.push(Bytes::from(content_bytes));
+            records.push(Bytes::from(content));
         }
 
         Ok(records)
@@ -531,15 +561,23 @@ impl Wal {
         // Then seek to the entry offset (relative to start of records)
         file.seek(SeekFrom::Current(offset as i64))?;
 
-        // Verify NANO-REC signature
-        let mut signature_buf = [0u8; 8];
+        // Verify NANORC signature
+        let mut signature_buf = [0u8; 6];
         file.read_exact(&mut signature_buf)?;
         if signature_buf != NANO_REC_SIGNATURE {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "NANO-REC signature not found at specified location",
+                "NANORC signature not found at specified location",
             ));
         }
+
+        // Read header length
+        let mut header_len_bytes = [0u8; 2];
+        file.read_exact(&mut header_len_bytes)?;
+        let header_len = u16::from_le_bytes(header_len_bytes);
+
+        // Skip header
+        file.seek(SeekFrom::Current(header_len as i64))?;
 
         // Read content length
         let mut content_len_bytes = [0u8; 8];
@@ -547,10 +585,10 @@ impl Wal {
         let content_len = u64::from_le_bytes(content_len_bytes);
 
         // Read content
-        let mut content_bytes = vec![0u8; content_len as usize];
-        file.read_exact(&mut content_bytes)?;
+        let mut content = vec![0u8; content_len as usize];
+        file.read_exact(&mut content)?;
 
-        Ok(Bytes::from(content_bytes))
+        Ok(Bytes::from(content))
     }
 
     /// Shuts down the WAL and removes all persisted storage.
@@ -602,14 +640,16 @@ impl Wal {
     /// Logs an entry to the WAL with durability enabled.
     ///
     /// # Returns
+    /// Logs an entry to the WAL with guaranteed durability.
     ///
-    /// Returns an `EntryRef` pointing to the location of the written entry.
+    /// This is a convenience method equivalent to `append_entry(key, header, content, true)`.
     pub fn log_entry<K: Hash + AsRef<[u8]> + Display>(
         &mut self,
         key: K,
+        header: Option<Bytes>,
         content: Bytes,
     ) -> io::Result<EntryRef> {
-        self.append_entry(key, content, true)
+        self.append_entry(key, header, content, true)
     }
 
     /// Returns the number of active segments.

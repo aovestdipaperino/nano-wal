@@ -19,23 +19,25 @@ fn test_real_world_event_sourcing_scenario() {
     // User created
     let _ref1 = wal.append_entry(
         format!("{}:created", user_id),
-        Bytes::from(r#"{"event":"UserCreated","email":"test@example.com","timestamp":"2024-01-01T00:00:00Z"}"#),
+        None,
+        Bytes::from(r#"{"event":"UserCreated","user_id":"user_12345","email":"user@example.com","timestamp":"2024-01-01T00:00:00Z"}"#),
         true,
     ).unwrap();
 
     // User updated profile
     let _ref2 = wal.append_entry(
         format!("{}:profile_updated", user_id),
+        None,
         Bytes::from(
-            r#"{"event":"ProfileUpdated","name":"John Doe","timestamp":"2024-01-01T01:00:00Z"}"#,
+            r#"{"event":"ProfileUpdated","user_id":"user_12345","new_name":"John Doe","timestamp":"2024-01-01T01:00:00Z"}"#,
         ),
         true,
-    )
-    .unwrap();
+    ).unwrap();
 
     // User made purchase
     let _ref3 = wal.append_entry(
         format!("{}:purchase", user_id),
+        None,
         Bytes::from(r#"{"event":"PurchaseMade","amount":99.99,"item":"Premium Plan","timestamp":"2024-01-01T02:00:00Z"}"#),
         true,
     ).unwrap();
@@ -43,6 +45,7 @@ fn test_real_world_event_sourcing_scenario() {
     // Another purchase
     let _ref4 = wal.append_entry(
         format!("{}:purchase", user_id),
+        None,
         Bytes::from(r#"{"event":"PurchaseMade","amount":49.99,"item":"Add-on Feature","timestamp":"2024-01-01T03:00:00Z"}"#),
         true,
     ).unwrap();
@@ -102,7 +105,7 @@ fn test_database_wal_simulation() {
     ];
 
     for (txn_id, sql) in operations {
-        let _ref = wal.log_entry(txn_id, Bytes::from(sql)).unwrap();
+        let _ref = wal.log_entry(txn_id, None, Bytes::from(sql)).unwrap();
     }
 
     // Verify all transactions are logged
@@ -143,7 +146,7 @@ fn test_message_queue_persistence() {
                 topic, i, topic, i
             );
             let _ref = wal
-                .append_entry(*topic, Bytes::from(message), i % 3 == 0)
+                .append_entry(*topic, None, Bytes::from(message), i % 3 == 0)
                 .unwrap(); // Sync every 3rd message
         }
     }
@@ -204,7 +207,9 @@ fn test_audit_log_with_timestamps() {
     ];
 
     for (event_type, event_data) in events {
-        let _ref = wal.log_entry(event_type, Bytes::from(event_data)).unwrap();
+        let _ref = wal
+            .log_entry(event_type, None, Bytes::from(event_data))
+            .unwrap();
 
         // Small delay to ensure different timestamps
         thread::sleep(Duration::from_millis(10));
@@ -257,7 +262,7 @@ fn test_cache_warming_scenario() {
 
     for (cache_key, cache_value) in cache_entries {
         let _ref = wal
-            .append_entry(cache_key, Bytes::from(cache_value), true)
+            .append_entry(cache_key, None, Bytes::from(cache_value), true)
             .unwrap();
     }
 
@@ -265,6 +270,7 @@ fn test_cache_warming_scenario() {
     let _ref1 = wal
         .append_entry(
             "user:123",
+            None,
             Bytes::from(r#"{"id":123,"name":"Alice Smith","email":"alice.smith@example.com"}"#),
             true,
         )
@@ -272,6 +278,7 @@ fn test_cache_warming_scenario() {
     let _ref2 = wal
         .append_entry(
             "config:feature_flags",
+            None,
             Bytes::from(r#"{"dark_mode":true,"new_ui":true,"beta_features":true}"#),
             true,
         )
@@ -318,6 +325,7 @@ fn test_high_frequency_trading_logs() {
             let _ref = wal
                 .append_entry(
                     format!("trades:{}", symbol),
+                    None,
                     Bytes::from(trade_data),
                     round == 4, // Only sync on last round for performance
                 )
@@ -365,19 +373,19 @@ fn test_log_file_naming_with_meaningful_keys() {
 
     // Write entries with meaningful keys
     let _ref1 = wal
-        .append_entry("user_events", Bytes::from("user event data"), true)
+        .append_entry("user_events", None, Bytes::from("user event data"), true)
         .unwrap();
 
     // No need to wait for time-based rotation with new architecture
 
     let _ref2 = wal
-        .append_entry("order_processing", Bytes::from("order data"), true)
+        .append_entry("order_processing", None, Bytes::from("order data"), true)
         .unwrap();
 
     // Different keys create separate segments automatically
 
     let _ref3 = wal
-        .append_entry("payment_logs", Bytes::from("payment data"), true)
+        .append_entry("payment_logs", None, Bytes::from("payment data"), true)
         .unwrap();
 
     // Check that log files have meaningful names

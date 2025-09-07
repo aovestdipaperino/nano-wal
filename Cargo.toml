@@ -1,6 +1,6 @@
 [package]
 name = "nano-wal"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 authors = ["Enzo Lombardi <enzinol@gmail.com>"]
 description = "A simple, lightweight Write-Ahead Log (WAL) implementation for append-only operations"
@@ -23,3 +23,6 @@ chrono = { version = "0.4.41", features = ["serde"] }
 
 [dev-dependencies]
 tempfile = "3.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.0", features = ["v4"] }

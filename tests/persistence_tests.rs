@@ -14,13 +14,13 @@ fn test_persistence_across_restarts() {
     {
         let mut wal = Wal::new(wal_dir, WalOptions::default()).unwrap();
         let _ref1 = wal
-            .append_entry("persistent_key1", Bytes::from("value1"), true)
+            .append_entry("persistent_key1", None, Bytes::from("value1"), true)
             .unwrap();
         let _ref2 = wal
-            .append_entry("persistent_key2", Bytes::from("value2"), true)
+            .append_entry("persistent_key2", None, Bytes::from("value2"), true)
             .unwrap();
         let _ref3 = wal
-            .append_entry("persistent_key1", Bytes::from("value1_updated"), true)
+            .append_entry("persistent_key1", None, Bytes::from("value1_updated"), true)
             .unwrap();
         // WAL goes out of scope here, simulating process termination
     }
@@ -57,18 +57,23 @@ fn test_simulated_process_kill_persistence() {
 
         // Write critical data with durability
         let _ref1 = wal
-            .append_entry("critical_key1", Bytes::from("important_data_1"), true)
+            .append_entry("critical_key1", None, Bytes::from("important_data_1"), true)
             .unwrap();
         let _ref2 = wal
-            .append_entry("critical_key2", Bytes::from("important_data_2"), true)
+            .append_entry("critical_key2", None, Bytes::from("important_data_2"), true)
             .unwrap();
         let _ref3 = wal
-            .append_entry("critical_key1", Bytes::from("updated_important_data"), true)
+            .append_entry(
+                "critical_key1",
+                None,
+                Bytes::from("updated_important_data"),
+                true,
+            )
             .unwrap();
 
         // Write some non-durable data
         let _ref4 = wal
-            .append_entry("temp_key", Bytes::from("temp_data"), false)
+            .append_entry("temp_key", None, Bytes::from("temp_data"), false)
             .unwrap();
 
         // Force sync to ensure data is written
@@ -122,7 +127,7 @@ fn test_multiple_restart_cycles() {
     {
         let mut wal = Wal::new(wal_dir, WalOptions::default()).unwrap();
         let _ref1 = wal
-            .append_entry("session1", Bytes::from("data1"), true)
+            .append_entry("session1", None, Bytes::from("data1"), true)
             .unwrap();
     }
 
@@ -130,7 +135,7 @@ fn test_multiple_restart_cycles() {
     {
         let mut wal = Wal::new(wal_dir, WalOptions::default()).unwrap();
         let _ref2 = wal
-            .append_entry("session2", Bytes::from("data2"), true)
+            .append_entry("session2", None, Bytes::from("data2"), true)
             .unwrap();
 
         // Verify first session data is still there
@@ -142,10 +147,10 @@ fn test_multiple_restart_cycles() {
     {
         let mut wal = Wal::new(wal_dir, WalOptions::default()).unwrap();
         let _ref3 = wal
-            .append_entry("session1", Bytes::from("data1_updated"), true)
+            .append_entry("session1", None, Bytes::from("data1_updated"), true)
             .unwrap();
         let _ref4 = wal
-            .append_entry("session3", Bytes::from("data3"), true)
+            .append_entry("session3", None, Bytes::from("data3"), true)
             .unwrap();
 
         // Verify all data from all sessions
@@ -175,20 +180,20 @@ fn test_crash_recovery_with_partial_writes() {
 
         // Write some complete entries
         let _ref1 = wal
-            .append_entry("complete1", Bytes::from("complete_data_1"), true)
+            .append_entry("complete1", None, Bytes::from("complete_data_1"), true)
             .unwrap();
         let _ref2 = wal
-            .append_entry("complete2", Bytes::from("complete_data_2"), true)
+            .append_entry("complete2", None, Bytes::from("complete_data_2"), true)
             .unwrap();
 
         // Write some entries without explicit sync (might be lost)
         let _ref3 = wal
-            .append_entry("maybe_lost", Bytes::from("might_be_lost"), false)
+            .append_entry("maybe_lost", None, Bytes::from("might_be_lost"), false)
             .unwrap();
 
         // Write one more durable entry
         let _ref4 = wal
-            .append_entry("complete3", Bytes::from("complete_data_3"), true)
+            .append_entry("complete3", None, Bytes::from("complete_data_3"), true)
             .unwrap();
 
         // Simulate crash by dropping without shutdown

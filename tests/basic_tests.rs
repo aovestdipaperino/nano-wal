@@ -22,10 +22,10 @@ fn test_append_and_log() {
 
     let mut wal = Wal::new(wal_dir, WalOptions::default()).unwrap();
     let content1 = Bytes::from("hello");
-    let _ref1 = wal.append_entry("key1", content1, false).unwrap();
+    let _ref1 = wal.append_entry("key1", None, content1, false).unwrap();
 
     let content2 = Bytes::from("world");
-    let _ref2 = wal.log_entry("key2", content2).unwrap();
+    let _ref2 = wal.log_entry("key2", None, content2).unwrap();
 
     wal.shutdown().unwrap();
 }
@@ -39,8 +39,12 @@ fn test_append_and_enumerate() {
     let content1 = Bytes::from("hello");
     let content2 = Bytes::from("world");
 
-    let _ref1 = wal.append_entry("key1", content1.clone(), false).unwrap();
-    let _ref2 = wal.append_entry("key2", content2.clone(), false).unwrap();
+    let _ref1 = wal
+        .append_entry("key1", None, content1.clone(), false)
+        .unwrap();
+    let _ref2 = wal
+        .append_entry("key2", None, content2.clone(), false)
+        .unwrap();
 
     let records: Vec<Bytes> = wal.enumerate_records("key1").unwrap().collect();
     assert_eq!(records.len(), 1);
@@ -56,9 +60,15 @@ fn test_enumerate_keys() {
 
     let mut wal = Wal::new(wal_dir, WalOptions::default()).unwrap();
 
-    let _ref1 = wal.append_entry("key1", Bytes::from("1"), false).unwrap();
-    let _ref2 = wal.append_entry("key2", Bytes::from("2"), false).unwrap();
-    let _ref3 = wal.append_entry("key1", Bytes::from("3"), false).unwrap();
+    let _ref1 = wal
+        .append_entry("key1", None, Bytes::from("1"), false)
+        .unwrap();
+    let _ref2 = wal
+        .append_entry("key2", None, Bytes::from("2"), false)
+        .unwrap();
+    let _ref3 = wal
+        .append_entry("key1", None, Bytes::from("3"), false)
+        .unwrap();
 
     let keys: Vec<String> = wal.enumerate_keys().unwrap().collect();
     assert_eq!(keys.len(), 2);
@@ -76,13 +86,13 @@ fn test_multiple_records_same_key() {
     let mut wal = Wal::new(wal_dir, WalOptions::default()).unwrap();
 
     let _ref1 = wal
-        .append_entry("key1", Bytes::from("value1"), false)
+        .append_entry("key1", None, Bytes::from("value1"), false)
         .unwrap();
     let _ref2 = wal
-        .append_entry("key1", Bytes::from("value2"), false)
+        .append_entry("key1", None, Bytes::from("value2"), false)
         .unwrap();
     let _ref3 = wal
-        .append_entry("key1", Bytes::from("value3"), false)
+        .append_entry("key1", None, Bytes::from("value3"), false)
         .unwrap();
 
     let records: Vec<Bytes> = wal.enumerate_records("key1").unwrap().collect();
@@ -101,17 +111,17 @@ fn test_entry_count() {
     assert_eq!(wal.active_segment_count(), 0);
 
     let _ref1 = wal
-        .append_entry("key1", Bytes::from("value1"), false)
+        .append_entry("key1", None, Bytes::from("value1"), false)
         .unwrap();
     assert_eq!(wal.active_segment_count(), 1);
 
     let _ref2 = wal
-        .append_entry("key2", Bytes::from("value2"), false)
+        .append_entry("key2", None, Bytes::from("value2"), false)
         .unwrap();
     assert_eq!(wal.active_segment_count(), 2);
 
     let _ref3 = wal
-        .append_entry("key1", Bytes::from("value1_updated"), false)
+        .append_entry("key1", None, Bytes::from("value1_updated"), false)
         .unwrap();
     assert_eq!(wal.active_segment_count(), 2);
 
@@ -126,7 +136,7 @@ fn test_sync() {
     let mut wal = Wal::new(wal_dir, WalOptions::default()).unwrap();
 
     let _ref1 = wal
-        .append_entry("key1", Bytes::from("value1"), false)
+        .append_entry("key1", None, Bytes::from("value1"), false)
         .unwrap();
     wal.sync().unwrap();
 
@@ -158,7 +168,7 @@ fn test_log_file_extension() {
 
     let mut wal = Wal::new(wal_dir, WalOptions::default()).unwrap();
     let _ref1 = wal
-        .append_entry("test_key", Bytes::from("test_data"), true)
+        .append_entry("test_key", None, Bytes::from("test_data"), true)
         .unwrap();
 
     // Check that .log files are created
@@ -187,13 +197,13 @@ fn test_key_in_filename() {
 
     // Use a key that should appear in the filename
     let _ref1 = wal
-        .append_entry("user123", Bytes::from("user_data"), true)
+        .append_entry("user123", None, Bytes::from("user_data"), true)
         .unwrap();
 
     // Force segment rotation
     std::thread::sleep(std::time::Duration::from_millis(100));
     let _ref2 = wal
-        .append_entry("order456", Bytes::from("order_data"), true)
+        .append_entry("order456", None, Bytes::from("order_data"), true)
         .unwrap();
 
     // Check that filenames contain key information
@@ -215,6 +225,64 @@ fn test_key_in_filename() {
         found_meaningful_name,
         "Should create files with meaningful names"
     );
+
+    wal.shutdown().unwrap();
+}
+
+#[test]
+fn test_header_functionality() {
+    let temp_dir = TempDir::new().unwrap();
+    let wal_dir = temp_dir.path().to_str().unwrap();
+
+    let mut wal = Wal::new(wal_dir, WalOptions::default()).unwrap();
+
+    // Test with header
+    let header_data = Bytes::from("metadata:important");
+    let content_data = Bytes::from("actual content");
+    let _ref1 = wal
+        .append_entry(
+            "test_key",
+            Some(header_data.clone()),
+            content_data.clone(),
+            true,
+        )
+        .unwrap();
+
+    // Test without header
+    let _ref2 = wal
+        .append_entry("test_key2", None, content_data.clone(), true)
+        .unwrap();
+
+    // Test large header (should not exceed 64KB)
+    let large_header = Bytes::from(vec![1u8; 1000]); // 1KB header
+    let _ref3 = wal
+        .append_entry("test_key3", Some(large_header), content_data.clone(), true)
+        .unwrap();
+
+    // Test max header size (64KB - 1)
+    let max_header = Bytes::from(vec![2u8; 65535]);
+    let _ref4 = wal
+        .append_entry("test_key4", Some(max_header), content_data.clone(), true)
+        .unwrap();
+
+    // Test header too large (should fail)
+    let oversized_header = Bytes::from(vec![3u8; 65536]); // 64KB + 1
+    let result = wal.append_entry(
+        "test_key5",
+        Some(oversized_header),
+        content_data.clone(),
+        true,
+    );
+    assert!(result.is_err());
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("Header size cannot exceed 64KB"));
+
+    // Verify we can still read the content (header is internal)
+    let records: Vec<Bytes> = wal.enumerate_records("test_key").unwrap().collect();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0], content_data);
 
     wal.shutdown().unwrap();
 }

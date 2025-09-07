@@ -11,7 +11,7 @@ fn test_append_returns_entry_ref() {
     let mut wal = Wal::new(wal_dir, WalOptions::default()).unwrap();
 
     let entry_ref = wal
-        .append_entry("test_key", Bytes::from("test_value"), true)
+        .append_entry("test_key", None, Bytes::from("test_value"), true)
         .unwrap();
 
     // Verify EntryRef structure
@@ -30,7 +30,7 @@ fn test_log_entry_returns_entry_ref() {
     let mut wal = Wal::new(wal_dir, WalOptions::default()).unwrap();
 
     let entry_ref = wal
-        .log_entry("test_key", Bytes::from("test_value"))
+        .log_entry("test_key", None, Bytes::from("test_value"))
         .unwrap();
 
     // Verify EntryRef structure
@@ -50,7 +50,7 @@ fn test_read_entry_at_valid_reference() {
 
     let test_data = Bytes::from("hello world");
     let entry_ref = wal
-        .append_entry("test_key", test_data.clone(), true)
+        .append_entry("test_key", None, test_data.clone(), true)
         .unwrap();
 
     // Read the entry using the reference
@@ -72,9 +72,9 @@ fn test_read_entry_at_multiple_entries() {
     let data2 = Bytes::from("second entry");
     let data3 = Bytes::from("third entry");
 
-    let ref1 = wal.append_entry("key1", data1.clone(), true).unwrap();
-    let ref2 = wal.append_entry("key2", data2.clone(), true).unwrap();
-    let ref3 = wal.append_entry("key3", data3.clone(), true).unwrap();
+    let ref1 = wal.append_entry("key1", None, data1.clone(), true).unwrap();
+    let ref2 = wal.append_entry("key2", None, data2.clone(), true).unwrap();
+    let ref3 = wal.append_entry("key3", None, data3.clone(), true).unwrap();
 
     // Read entries in random order
     assert_eq!(wal.read_entry_at(ref3).unwrap(), data3);
@@ -96,7 +96,7 @@ fn test_read_entry_at_after_restart() {
     {
         let mut wal = Wal::new(wal_dir, WalOptions::default()).unwrap();
         entry_ref = wal
-            .append_entry("persistent_key", test_data.clone(), true)
+            .append_entry("persistent_key", None, test_data.clone(), true)
             .unwrap();
     }
 
@@ -120,7 +120,7 @@ fn test_read_entry_at_invalid_signature() {
 
     // Write some data first
     let _entry_ref = wal
-        .append_entry("test_key", Bytes::from("test_data"), true)
+        .append_entry("test_key", None, Bytes::from("test_data"), true)
         .unwrap();
 
     // Create an invalid reference pointing to a non-existent key/sequence
@@ -172,10 +172,10 @@ fn test_read_entry_at_with_different_key_types() {
     let number_data = Bytes::from("number key data");
 
     let string_ref = wal
-        .append_entry("string_key", string_data.clone(), true)
+        .append_entry("string_key", None, string_data.clone(), true)
         .unwrap();
     let number_ref = wal
-        .append_entry("12345", number_data.clone(), true)
+        .append_entry("12345", None, number_data.clone(), true)
         .unwrap();
 
     // Verify we can read both entries
@@ -195,7 +195,7 @@ fn test_read_entry_at_large_content() {
     // Create large content (100KB)
     let large_data = Bytes::from(vec![42u8; 1024 * 100]);
     let entry_ref = wal
-        .append_entry("large_key", large_data.clone(), true)
+        .append_entry("large_key", None, large_data.clone(), true)
         .unwrap();
 
     // Verify we can read the large entry
@@ -215,7 +215,7 @@ fn test_read_entry_at_empty_content() {
     // Test with empty content
     let empty_data = Bytes::new();
     let entry_ref = wal
-        .append_entry("empty_key", empty_data.clone(), true)
+        .append_entry("empty_key", None, empty_data.clone(), true)
         .unwrap();
 
     // Verify we can read the empty entry
@@ -240,15 +240,20 @@ fn test_entry_ref_across_segment_rotation() {
     .unwrap();
 
     let data1 = Bytes::from("data in first segment that is long enough to trigger rotation");
-    let ref1 = wal.append_entry("key1", data1.clone(), true).unwrap();
+    let ref1 = wal.append_entry("key1", None, data1.clone(), true).unwrap();
 
     // Add more data to trigger segment rotation
     let _extra_data = wal
-        .append_entry("key1", Bytes::from("extra data to trigger rotation"), true)
+        .append_entry(
+            "key1",
+            None,
+            Bytes::from("extra data to trigger rotation"),
+            true,
+        )
         .unwrap();
 
     let data2 = Bytes::from("data in second segment");
-    let ref2 = wal.append_entry("key2", data2.clone(), true).unwrap();
+    let ref2 = wal.append_entry("key2", None, data2.clone(), true).unwrap();
 
     // Both references should work even across segments
     assert_eq!(wal.read_entry_at(ref1).unwrap(), data1);
@@ -269,7 +274,7 @@ fn test_entry_ref_serialization_compatibility() {
 
     let test_data = Bytes::from("serialization test");
     let entry_ref = wal
-        .append_entry("serial_key", test_data.clone(), true)
+        .append_entry("serial_key", None, test_data.clone(), true)
         .unwrap();
 
     // EntryRef should be copyable and comparable
@@ -297,7 +302,7 @@ fn test_random_access_performance_characteristics() {
     for i in 0..100 {
         let data = Bytes::from(format!("entry_{}", i));
         let entry_ref = wal
-            .append_entry(&format!("key_{}", i), data, false)
+            .append_entry(&format!("key_{}", i), None, data, false)
             .unwrap();
         refs.push(entry_ref);
     }
