@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2024-01-02
+
+### Added
+- **Segment expiration timestamps**: Each segment now stores its expiration timestamp in the file header for precise cleanup
+- **Chainable configuration API**: New fluent methods `retention()` and `segments_per_retention_period()` for cleaner configuration
+- **Time-based segment expiration**: Segments expire based on calculated timestamps rather than file creation times
+
+### Changed
+- **BREAKING: Removed segment size concept** - Segments now rotate purely based on time, not size
+- **BREAKING: Removed `max_segment_size`** - Eliminated from `WalOptions`, `with_segment_size()`, and `segment_size()` methods
+- **BREAKING: File header format** - Added 8-byte expiration timestamp: `[NANO-LOG:8][sequence:8][expiration:8][key_length:8][key:N]`
+- **Segment creation logic** - New segments created only when current segment expires, not on size limits
+- **Compaction efficiency** - Reads expiration timestamps directly from headers instead of file metadata
+- **Predictable behavior** - Segment rotation happens on fixed time intervals regardless of content size
+
+### Removed
+- **Size-based rotation** - No more `max_segment_size` configuration or size tracking
+- **Size validation** - Removed validation for segment size limits
+- **Current size tracking** - Eliminated `current_size` field from `ActiveSegment`
+
+### Technical Details
+- **Expiration calculation**: `current_time + (retention_period / segments_per_retention_period)`
+- **Natural size variation**: Segments grow based on write patterns - large during busy periods, small during quiet times
+- **Simplified API**: Only two configuration parameters: `entry_retention` and `segments_per_retention_period`
+- **Performance improvement**: No size checks on writes, faster compaction with timestamp comparisons
+- **File position calculation**: Dynamic positioning using `seek(SeekFrom::Current(0))` instead of size tracking
+
+### Migration Notes
+- **Configuration update required** - Remove all `max_segment_size` parameters from existing configurations
+- **Behavioral change** - Segment sizes now vary naturally with write patterns instead of fixed size limits
+- **File format compatibility** - Header format changed but entry format remains the same
+- **Predictable rotation** - Segments now expire on fixed schedules rather than unpredictable size thresholds
+
 ## [0.2.0] - 2024-01-01
 
 ### Added
@@ -112,7 +145,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Audit logging with time-based retention
 - Cache warming and persistence
 
-[Unreleased]: https://github.com/yourusername/nano-wal/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/yourusername/nano-wal/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/yourusername/nano-wal/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/yourusername/nano-wal/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/yourusername/nano-wal/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/yourusername/nano-wal/releases/tag/v0.1.0
