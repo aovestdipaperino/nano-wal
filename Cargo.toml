@@ -1,12 +1,12 @@
 [package]
 name = "nano-wal"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
-authors = ["Your Name <your.email@example.com>"]
+authors = ["Enzo Lombardi <enzinol@gmail.com>"]
 description = "A simple, lightweight Write-Ahead Log (WAL) implementation for append-only operations"
 documentation = "https://docs.rs/nano-wal"
-homepage = "https://github.com/yourusername/nano-wal"
-repository = "https://github.com/yourusername/nano-wal"
+homepage = "https://github.com/aovestdipaperino/nano-wal"
+repository = "https://github.com/aovestdipaperino/nano-wal"
 license = "MIT"
 keywords = ["wal", "write-ahead-log", "persistence", "database", "storage"]
 categories = ["database-implementations", "data-structures", "filesystem"]
