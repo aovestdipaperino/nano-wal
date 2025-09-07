@@ -358,7 +358,7 @@ fn test_log_file_naming_with_meaningful_keys() {
         wal_dir,
         WalOptions {
             entry_retention: Duration::from_secs(20),
-            max_segment_size: 1024, // 1KB segments
+            segments_per_retention_period: 10,
         },
     )
     .unwrap();

@@ -234,7 +234,7 @@ fn test_entry_ref_across_segment_rotation() {
         wal_dir,
         WalOptions {
             entry_retention: std::time::Duration::from_secs(10),
-            max_segment_size: 50, // Small segments to force rotation
+            segments_per_retention_period: 10,
         },
     )
     .unwrap();

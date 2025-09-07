@@ -31,15 +31,15 @@ pub struct EntryRef {
 pub struct WalOptions {
     /// The duration for which entries are retained.
     pub entry_retention: Duration,
-    /// The maximum size of a segment file in bytes before rotation.
-    pub max_segment_size: u64,
+    /// The number of segments per retention period for calculating expiration.
+    pub segments_per_retention_period: u32,
 }
 
 impl Default for WalOptions {
     fn default() -> Self {
         Self {
             entry_retention: Duration::from_secs(60 * 60 * 24 * 7), // 1 week
-            max_segment_size: 1024 * 1024,                          // 1MB
+            segments_per_retention_period: 10, // 10 segments per retention period
         }
     }
 }
@@ -53,26 +53,38 @@ impl WalOptions {
         }
     }
 
-    /// Creates a new WalOptions with custom segment size and default retention.
-    pub fn with_segment_size(size: u64) -> Self {
+    /// Creates a new WalOptions with custom segments per retention period.
+    pub fn with_segments_per_retention_period(segments: u32) -> Self {
         Self {
-            max_segment_size: size,
+            segments_per_retention_period: segments,
             ..Default::default()
         }
     }
 
+    /// Sets the retention period for this configuration (chainable).
+    pub fn retention(mut self, retention: Duration) -> Self {
+        self.entry_retention = retention;
+        self
+    }
+
+    /// Sets the segments per retention period for this configuration (chainable).
+    pub fn segments_per_retention_period(mut self, segments: u32) -> Self {
+        self.segments_per_retention_period = segments;
+        self
+    }
+
     /// Validates the options and returns an error if invalid.
     pub fn validate(&self) -> io::Result<()> {
-        if self.max_segment_size == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "max_segment_size must be greater than 0",
-            ));
-        }
         if self.entry_retention.as_secs() == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "entry_retention must be greater than 0",
+            ));
+        }
+        if self.segments_per_retention_period == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "segments_per_retention_period must be greater than 0",
             ));
         }
         Ok(())
@@ -86,8 +98,8 @@ struct ActiveSegment {
     file: File,
     /// The sequence number of this segment
     sequence_number: u64,
-    /// Current size of the segment file
-    current_size: u64,
+    /// Timestamp when this segment expires (Unix timestamp)
+    expiration_timestamp: u64,
 }
 
 /// A Write-Ahead Log (WAL) with per-key segment sets.
@@ -207,9 +219,11 @@ impl Wal {
         key.as_ref().hash(&mut hasher);
         let key_hash = hasher.finish();
 
-        // Check if we need to rotate the current segment
+        let now = Utc::now().timestamp() as u64;
+
+        // Check if we need to rotate the current segment due to expiration
         if let Some(active) = self.active_segments.get(&key_hash) {
-            if active.current_size >= self.options.max_segment_size {
+            if now >= active.expiration_timestamp {
                 // Need to rotate - remove from active segments
                 self.active_segments.remove(&key_hash);
             }
@@ -220,6 +234,11 @@ impl Wal {
             let sequence = self.next_sequence.get(&key_hash).unwrap_or(&1).clone();
             self.next_sequence.insert(key_hash, sequence + 1);
 
+            // Calculate expiration timestamp based on segments per retention period
+            let segment_duration = self.options.entry_retention.as_secs()
+                / self.options.segments_per_retention_period as u64;
+            let expiration_timestamp = now + segment_duration;
+
             let filename = self.generate_filename(key, key_hash, sequence);
             let file_path = self.dir.join(&filename);
 
@@ -229,20 +248,13 @@ impl Wal {
                 .append(true)
                 .open(&file_path)?;
 
-            // Write file header if this is a new file
-            let file_size = file.metadata()?.len();
-            let current_size = if file_size == 0 {
-                self.write_file_header(&mut file, key)?;
-                // Calculate header size
-                8 + 8 + 8 + key.as_ref().len() as u64
-            } else {
-                file_size
-            };
+            // Write file header for new file
+            self.write_file_header(&mut file, key, expiration_timestamp)?;
 
             let active_segment = ActiveSegment {
                 file,
                 sequence_number: sequence,
-                current_size,
+                expiration_timestamp,
             };
 
             self.active_segments.insert(key_hash, active_segment);
@@ -252,13 +264,21 @@ impl Wal {
     }
 
     /// Writes the file header for a new segment
-    fn write_file_header<K: AsRef<[u8]>>(&self, file: &mut File, key: &K) -> io::Result<()> {
+    fn write_file_header<K: AsRef<[u8]>>(
+        &self,
+        file: &mut File,
+        key: &K,
+        expiration_timestamp: u64,
+    ) -> io::Result<()> {
         // Write NANO-LOG signature
         file.write_all(&NANO_LOG_SIGNATURE)?;
 
         // Write sequence number (will be updated by caller)
         let sequence = 0u64; // Placeholder, caller should update
         file.write_all(&sequence.to_le_bytes())?;
+
+        // Write expiration timestamp
+        file.write_all(&expiration_timestamp.to_le_bytes())?;
 
         // Write key length and key
         let key_bytes = key.as_ref();
@@ -290,9 +310,10 @@ impl Wal {
 
         let active_segment = self.active_segments.get_mut(&key_hash).unwrap();
 
-        // Calculate entry offset (after file header)
-        let file_header_size = 8 + 8 + 8 + key.as_ref().len() as u64; // NANO-LOG + sequence + key_len + key
-        let entry_offset = active_segment.current_size - file_header_size;
+        // Calculate current file position for offset (after header)
+        let current_position = active_segment.file.seek(SeekFrom::Current(0))?;
+        let file_header_size = 8 + 8 + 8 + 8 + key.as_ref().len() as u64; // NANO-LOG + sequence + expiration + key_len + key
+        let entry_offset = current_position - file_header_size;
 
         // Write entry: NANO-REC signature + content_length + content
         active_segment.file.write_all(&NANO_REC_SIGNATURE)?;
@@ -300,10 +321,6 @@ impl Wal {
         let content_len = content.len() as u64;
         active_segment.file.write_all(&content_len.to_le_bytes())?;
         active_segment.file.write_all(content.as_ref())?;
-
-        // Update segment size
-        let entry_size = 8 + 8 + content_len; // signature + length + content
-        active_segment.current_size += entry_size;
 
         if durable {
             active_segment.file.sync_data()?;
@@ -355,6 +372,9 @@ impl Wal {
         }
 
         // Skip sequence number
+        file.seek(SeekFrom::Current(8))?;
+
+        // Skip expiration timestamp
         file.seek(SeekFrom::Current(8))?;
 
         // Read key
@@ -464,6 +484,9 @@ impl Wal {
         // Skip sequence number
         file.seek(SeekFrom::Current(8))?;
 
+        // Skip expiration timestamp
+        file.seek(SeekFrom::Current(8))?;
+
         // Read and skip key
         let mut key_len_bytes = [0u8; 8];
         file.read_exact(&mut key_len_bytes)?;
@@ -540,20 +563,29 @@ impl Wal {
     /// Compacts the WAL by removing expired segments.
     pub fn compact(&mut self) -> Result<(), std::io::Error> {
         let now = Utc::now().timestamp() as u64;
-        let retention_secs = self.options.entry_retention.as_secs();
 
         if let Ok(entries) = fs::read_dir(&self.dir) {
             for entry in entries.flatten() {
                 if let Some(filename) = entry.file_name().to_str() {
                     if filename.ends_with(".log") {
                         let file_path = entry.path();
-                        if let Ok(metadata) = file_path.metadata() {
-                            if let Ok(created) = metadata.created() {
-                                if let Ok(created_secs) =
-                                    created.duration_since(std::time::UNIX_EPOCH)
+
+                        // Read the expiration timestamp from the file header
+                        if let Ok(mut file) = File::open(&file_path) {
+                            let mut signature = [0u8; 8];
+                            if file.read_exact(&mut signature).is_ok()
+                                && signature == NANO_LOG_SIGNATURE
+                            {
+                                let mut sequence_bytes = [0u8; 8];
+                                let mut expiration_bytes = [0u8; 8];
+
+                                if file.read_exact(&mut sequence_bytes).is_ok()
+                                    && file.read_exact(&mut expiration_bytes).is_ok()
                                 {
-                                    let file_age = now - created_secs.as_secs();
-                                    if file_age > retention_secs {
+                                    let expiration_timestamp = u64::from_le_bytes(expiration_bytes);
+
+                                    // Remove file if it has expired
+                                    if now > expiration_timestamp {
                                         let _ = fs::remove_file(&file_path);
                                     }
                                 }

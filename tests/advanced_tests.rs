@@ -15,7 +15,7 @@ fn test_segment_rotation_time_based() {
         wal_dir,
         WalOptions {
             entry_retention: Duration::from_secs(10),
-            max_segment_size: 50, // Small segments to force rotation
+            segments_per_retention_period: 10,
         },
     )
     .unwrap();
@@ -59,7 +59,7 @@ fn test_compaction() {
         wal_dir,
         WalOptions {
             entry_retention: Duration::from_secs(5),
-            max_segment_size: 1024,
+            segments_per_retention_period: 10,
         },
     )
     .unwrap();
@@ -175,8 +175,8 @@ fn test_error_handling_invalid_config() {
     let result = Wal::new(
         wal_dir,
         WalOptions {
-            entry_retention: Duration::from_secs(60 * 60 * 24), // 1 day
-            max_segment_size: 0,                                // Invalid
+            entry_retention: Duration::from_secs(0), // Invalid
+            segments_per_retention_period: 10,
         },
     );
     assert!(result.is_err());
@@ -185,8 +185,8 @@ fn test_error_handling_invalid_config() {
     let result = Wal::new(
         wal_dir,
         WalOptions {
-            entry_retention: Duration::from_secs(0), // Invalid
-            max_segment_size: 1024,
+            entry_retention: Duration::from_secs(60 * 60 * 24), // 1 day
+            segments_per_retention_period: 0,                   // Invalid
         },
     );
     assert!(result.is_err());
@@ -264,16 +264,16 @@ fn test_wal_options_builder_methods() {
     // Test with_retention method
     let options = WalOptions::with_retention(Duration::from_secs(3600));
     assert_eq!(options.entry_retention, Duration::from_secs(3600));
-    assert_eq!(options.max_segment_size, 1024 * 1024); // Default
+    assert_eq!(options.segments_per_retention_period, 10); // Default
 
     let wal = Wal::new(wal_dir, options).unwrap();
     assert_eq!(wal.active_segment_count(), 0);
 
-    drop(wal);
+    // Drop wal to free the directory
 
-    // Test with_segment_size method
-    let options = WalOptions::with_segment_size(512 * 1024);
-    assert_eq!(options.max_segment_size, 512 * 1024);
+    // Test with_segments_per_retention_period method
+    let options = WalOptions::with_segments_per_retention_period(20);
+    assert_eq!(options.segments_per_retention_period, 20);
     assert_eq!(
         options.entry_retention,
         Duration::from_secs(60 * 60 * 24 * 7)
@@ -292,7 +292,7 @@ fn test_segment_id_progression() {
         wal_dir,
         WalOptions {
             entry_retention: Duration::from_secs(6),
-            max_segment_size: 50, // Small segments
+            segments_per_retention_period: 10,
         },
     )
     .unwrap();
