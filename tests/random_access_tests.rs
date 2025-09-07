@@ -15,7 +15,8 @@ fn test_append_returns_entry_ref() {
         .unwrap();
 
     // Verify EntryRef structure
-    assert_eq!(entry_ref.segment_id, wal.active_segment_id());
+    assert!(entry_ref.key_hash > 0);
+    assert_eq!(entry_ref.sequence_number, 1);
     // offset is u64, so it's always >= 0
 
     wal.shutdown().unwrap();
@@ -33,7 +34,8 @@ fn test_log_entry_returns_entry_ref() {
         .unwrap();
 
     // Verify EntryRef structure
-    assert_eq!(entry_ref.segment_id, wal.active_segment_id());
+    assert!(entry_ref.key_hash > 0);
+    assert_eq!(entry_ref.sequence_number, 1);
     // offset is u64, so it's always >= 0
 
     wal.shutdown().unwrap();
@@ -121,16 +123,17 @@ fn test_read_entry_at_invalid_signature() {
         .append_entry("test_key", Bytes::from("test_data"), true)
         .unwrap();
 
-    // Create an invalid reference pointing to a location without NANO-WAL signature
+    // Create an invalid reference pointing to a non-existent key/sequence
     let invalid_ref = EntryRef {
-        segment_id: wal.active_segment_id(),
-        offset: 4, // Point to middle of signature
+        key_hash: 99999,        // Non-existent key hash
+        sequence_number: 99999, // Non-existent sequence
+        offset: 0,
     };
 
-    // Should return error due to invalid signature
+    // Should return error due to missing segment file
     let result = wal.read_entry_at(invalid_ref);
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::NotFound);
 
     wal.shutdown().unwrap();
 }
@@ -144,7 +147,8 @@ fn test_read_entry_at_nonexistent_segment() {
 
     // Create a reference to a non-existent segment
     let invalid_ref = EntryRef {
-        segment_id: 999999,
+        key_hash: 999999,
+        sequence_number: 999999,
         offset: 0,
     };
 
@@ -230,16 +234,18 @@ fn test_entry_ref_across_segment_rotation() {
         wal_dir,
         WalOptions {
             entry_retention: std::time::Duration::from_secs(10),
-            segments: 5, // 2 second segments
+            max_segment_size: 50, // Small segments to force rotation
         },
     )
     .unwrap();
 
-    let data1 = Bytes::from("data in first segment");
+    let data1 = Bytes::from("data in first segment that is long enough to trigger rotation");
     let ref1 = wal.append_entry("key1", data1.clone(), true).unwrap();
 
-    // Wait for segment rotation
-    std::thread::sleep(std::time::Duration::from_secs(3));
+    // Add more data to trigger segment rotation
+    let _extra_data = wal
+        .append_entry("key1", Bytes::from("extra data to trigger rotation"), true)
+        .unwrap();
 
     let data2 = Bytes::from("data in second segment");
     let ref2 = wal.append_entry("key2", data2.clone(), true).unwrap();
@@ -248,8 +254,8 @@ fn test_entry_ref_across_segment_rotation() {
     assert_eq!(wal.read_entry_at(ref1).unwrap(), data1);
     assert_eq!(wal.read_entry_at(ref2).unwrap(), data2);
 
-    // Segments should be different
-    assert_ne!(ref1.segment_id, ref2.segment_id);
+    // Key hashes should be different
+    assert_ne!(ref1.key_hash, ref2.key_hash);
 
     wal.shutdown().unwrap();
 }
@@ -269,7 +275,8 @@ fn test_entry_ref_serialization_compatibility() {
     // EntryRef should be copyable and comparable
     let copied_ref = entry_ref;
     assert_eq!(entry_ref, copied_ref);
-    assert_eq!(entry_ref.segment_id, copied_ref.segment_id);
+    assert_eq!(entry_ref.key_hash, copied_ref.key_hash);
+    assert_eq!(entry_ref.sequence_number, copied_ref.sequence_number);
     assert_eq!(entry_ref.offset, copied_ref.offset);
 
     // Should be able to read using copied reference

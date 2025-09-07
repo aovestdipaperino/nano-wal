@@ -2,17 +2,17 @@
 
 ![nano-wal](nano-wal.png)
 
-A simple, lightweight Write-Ahead Log (WAL) implementation in Rust designed for append-only operations with configurable retention, segment management, and optional random access for memory-constrained systems.
+A simple, lightweight Write-Ahead Log (WAL) implementation in Rust with per-key segment sets, designed for append-only operations with configurable retention and random access for memory-constrained systems.
 
 ## Features
 
-- **Append-only operations**: Efficient write operations with optional durability guarantees
+- **Per-key segment sets**: Each key gets its own set of segment files for optimal organization
 - **Entry references**: Get position references for written entries enabling random access
 - **Random access reads**: Read specific entries directly using their references with signature verification
-- **Segment rotation**: Automatic segment file rotation based on configurable time intervals
-- **Key-based indexing**: Fast lookups and enumeration of records by key
-- **Configurable retention**: Automatic cleanup of old entries based on time-based retention policies
-- **Compaction**: Remove expired segments to reclaim disk space
+- **Size-based rotation**: Automatic segment file rotation based on configurable size limits
+- **Meaningful filenames**: Segment files include key names and sequence numbers (e.g., `topic-partition-0001.log`)
+- **Dual signatures**: NANO-LOG file headers and NANO-REC entry signatures for data integrity
+- **Configurable retention**: Automatic cleanup of old files based on time-based retention policies
 - **Memory-efficient**: Zero RAM overhead with optional random access for memory-constrained systems
 
 ## Installation
@@ -21,7 +21,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-nano-wal = "0.1.1"
+nano-wal = "0.2.0"
 ```
 
 ## Quick Start
@@ -68,7 +68,7 @@ use std::time::Duration;
 
 let options = WalOptions {
     entry_retention: Duration::from_secs(60 * 60 * 24), // 1 day
-    segments: 24, // 24 segments (1 hour per segment)
+    max_segment_size: 10 * 1024 * 1024, // 10MB per segment
 };
 
 let mut wal = Wal::new("./custom_wal", options)?;
@@ -77,7 +77,7 @@ let mut wal = Wal::new("./custom_wal", options)?;
 ### Configuration Options
 
 - `entry_retention`: Duration for which entries are retained before being eligible for compaction (default: 1 week)
-- `segments`: Number of segments to use per retention period (default: 10 segments, creating time-based rotation)
+- `max_segment_size`: Maximum size of a segment file in bytes before rotation (default: 1MB)
 
 ## API Reference
 
@@ -89,7 +89,7 @@ let mut wal = Wal::new("./custom_wal", options)?;
 - `read_entry_at(entry_ref: EntryRef) -> Bytes` - Read specific entry using its reference (random access)
 - `enumerate_records<K>(key: K)` - Get all records for a specific key (sequential access)
 - `enumerate_keys() -> Vec<String>` - Get all unique keys in the WAL
-- `compact()` - Remove expired segments based on retention policy
+- `compact()` - Remove expired segment files based on retention policy
 - `shutdown()` - Clean shutdown and remove all WAL files
 
 ### Key Types
@@ -99,40 +99,41 @@ Keys must implement `Hash + AsRef<[u8]> + Display` for append operations. Common
 ### Entry References
 
 `EntryRef` is a lightweight reference containing:
-- `segment_id: u64` - The segment file identifier
-- `offset: u64` - The byte offset within the segment
+- `key_hash: u64` - Hash of the key for which segment set this entry belongs to
+- `sequence_number: u64` - The sequence number of the segment file
+- `offset: u64` - The byte offset within the segment file (after the header)
 
 Entry references enable efficient random access while maintaining zero RAM overhead for the main WAL operations.
 
 ## File Format
 
-The WAL stores data in binary format across multiple segment files:
+The WAL stores data in binary format with per-key segment sets:
 
-- Each segment is named `{segment_id}.log` or `{segment_id}_{key}.log` for better debugging
-- Each entry is prefixed with the UTF-8 'NANO-WAL' signature for integrity verification
-- Entries contain: signature (8 bytes) + timestamp (8 bytes) + key_length (8 bytes) + key + content_length (8 bytes) + content
-- Segments rotate based on time intervals (retention_period / segments)
+- Each segment is named `{key}-{key_hash}-{sequence}.log` (e.g., `hits-12345-0001.log`)
+- File header: `[NANO-LOG:8][sequence:8][key_length:8][key:N]`
+- Entry format: `[NANO-REC:8][content_length:8][content:M]`
+- Segments rotate based on size limits (when exceeding `max_segment_size`)
 
 ## Use Cases
 
-- **Event Sourcing**: Store events in append-only fashion with key-based retrieval and random access
-- **Database WAL**: Write-ahead logging for database systems with entry-level recovery
-- **Message Queues**: Persistent message storage with direct access to specific messages
-- **Audit Logs**: Tamper-evident logging with time-based retention and signature verification
-- **Memory-Constrained Systems**: Support RAM-based append-only structures with disk-backed random access
-- **Cache Persistence**: Persistent storage for cache warming with selective entry retrieval
+- **Topic/Partition Systems**: Each key represents a topic-partition pair with isolated segment files
+- **Event Sourcing**: Store events per entity with dedicated segment sets for optimal performance
+- **Database WAL**: Write-ahead logging with per-table or per-operation-type isolation
+- **Message Queues**: Persistent message storage with topic-based segment organization
+- **Audit Logs**: Tamper-evident logging with dual signature verification (file + entry level)
+- **Memory-Constrained Systems**: Support RAM-based structures with disk-backed random access per key
 
 ## Performance Characteristics
 
-- **Write throughput**: Optimized for sequential writes with signature prefixing
-- **Read performance**: O(1) key lookups via in-memory index for sequential access, direct file I/O for random access
-- **Storage efficiency**: Time-based segment rotation and automatic compaction
-- **Memory usage**: Zero RAM overhead for entry storage, lightweight in-memory index for key mapping
-- **Random access**: Direct entry retrieval with signature verification for data integrity
+- **Write throughput**: Optimized for sequential writes per key with minimal overhead
+- **Read performance**: Direct file access per key, no cross-key index lookups required
+- **Storage efficiency**: Size-based segment rotation and automatic file-based compaction
+- **Memory usage**: Zero RAM overhead for entry storage, minimal active segment tracking
+- **Random access**: Direct entry retrieval with dual signature verification for data integrity
 
 ## Thread Safety
 
-While the WAL struct itself is not `Sync`, it can be safely used in single-threaded contexts or wrapped in appropriate synchronization primitives (`Arc<Mutex<Wal>>`) for multi-threaded scenarios. Entry references (`EntryRef`) are `Copy` and can be safely shared between threads.
+While the WAL struct itself is not `Sync`, it can be safely used in single-threaded contexts or wrapped in appropriate synchronization primitives (`Arc<Mutex<Wal>>`) for multi-threaded scenarios. Entry references (`EntryRef`) are `Copy` and can be safely shared between threads. The per-key segment design makes it ideal for partitioned workloads.
 
 ## Examples
 

@@ -15,24 +15,25 @@ fn test_segment_rotation_time_based() {
         wal_dir,
         WalOptions {
             entry_retention: Duration::from_secs(10),
-            segments: 5, // 2 second segments
+            max_segment_size: 50, // Small segments to force rotation
         },
     )
     .unwrap();
 
-    // Write some entries and wait for time-based rotation
+    // Write some entries to trigger size-based rotation
     let _ref1 = wal
-        .append_entry("key1", Bytes::from("data1"), false)
+        .append_entry(
+            "key1",
+            Bytes::from("data1 with enough content to trigger rotation when combined"),
+            false,
+        )
         .unwrap();
-
-    // Sleep to trigger segment rotation
-    thread::sleep(Duration::from_secs(3));
 
     let _ref2 = wal
         .append_entry("key2", Bytes::from("data2"), false)
         .unwrap();
 
-    // Should have rotated to a new segment or at least have files
+    // Should have created segment files for different keys
     let entries = fs::read_dir(wal_dir).unwrap();
     let log_files: Vec<_> = entries
         .filter_map(|e| e.ok())
@@ -58,7 +59,7 @@ fn test_compaction() {
         wal_dir,
         WalOptions {
             entry_retention: Duration::from_secs(5),
-            segments: 2,
+            max_segment_size: 1024,
         },
     )
     .unwrap();
@@ -124,7 +125,7 @@ fn test_large_number_of_entries() {
     let keys: Vec<String> = wal.enumerate_keys().unwrap().collect();
     assert_eq!(keys.len(), 10); // Should have 10 unique keys
 
-    assert_eq!(wal.entry_count(), 1000);
+    assert_eq!(wal.active_segment_count(), 10); // Should have 10 active segments
 
     wal.shutdown().unwrap();
 }
@@ -139,7 +140,7 @@ fn test_concurrent_like_operations() {
     // Simulate rapid writes like concurrent operations might produce
     for batch in 0..10 {
         for i in 0..50 {
-            let key = format!("batch_{}_item_{}", batch, i);
+            let key = format!("batch_{}", batch); // Use only batch ID as key
             let content = Bytes::from(format!("batch {} item {} data", batch, i));
             let _ref = wal.append_entry(&key, content, false).unwrap();
         }
@@ -151,16 +152,16 @@ fn test_concurrent_like_operations() {
     }
 
     // Verify all data is accessible
-    assert_eq!(wal.entry_count(), 500);
+    assert_eq!(wal.active_segment_count(), 10); // 10 batches = 10 unique keys
 
     // Test reading some specific entries
-    let records: Vec<Bytes> = wal.enumerate_records("batch_0_item_0").unwrap().collect();
-    assert_eq!(records.len(), 1);
+    let records: Vec<Bytes> = wal.enumerate_records("batch_0").unwrap().collect();
+    assert_eq!(records.len(), 50); // 50 items per batch
     assert_eq!(records[0], Bytes::from("batch 0 item 0 data"));
 
-    let records: Vec<Bytes> = wal.enumerate_records("batch_9_item_49").unwrap().collect();
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0], Bytes::from("batch 9 item 49 data"));
+    let records: Vec<Bytes> = wal.enumerate_records("batch_9").unwrap().collect();
+    assert_eq!(records.len(), 50); // 50 items per batch
+    assert_eq!(records[49], Bytes::from("batch 9 item 49 data"));
 
     wal.shutdown().unwrap();
 }
@@ -174,8 +175,8 @@ fn test_error_handling_invalid_config() {
     let result = Wal::new(
         wal_dir,
         WalOptions {
-            entry_retention: Duration::from_secs(60),
-            segments: 0, // Invalid
+            entry_retention: Duration::from_secs(60 * 60 * 24), // 1 day
+            max_segment_size: 0,                                // Invalid
         },
     );
     assert!(result.is_err());
@@ -185,17 +186,7 @@ fn test_error_handling_invalid_config() {
         wal_dir,
         WalOptions {
             entry_retention: Duration::from_secs(0), // Invalid
-            segments: 10,
-        },
-    );
-    assert!(result.is_err());
-
-    // Test with retention too small for segments
-    let result = Wal::new(
-        wal_dir,
-        WalOptions {
-            entry_retention: Duration::from_secs(5),
-            segments: 10, // Would create 0.5 second segments
+            max_segment_size: 1024,
         },
     );
     assert!(result.is_err());
@@ -273,16 +264,16 @@ fn test_wal_options_builder_methods() {
     // Test with_retention method
     let options = WalOptions::with_retention(Duration::from_secs(3600));
     assert_eq!(options.entry_retention, Duration::from_secs(3600));
-    assert_eq!(options.segments, 10); // Default
+    assert_eq!(options.max_segment_size, 1024 * 1024); // Default
 
     let wal = Wal::new(wal_dir, options).unwrap();
-    assert_eq!(wal.entry_count(), 0);
+    assert_eq!(wal.active_segment_count(), 0);
 
     drop(wal);
 
-    // Test with_segments method
-    let options = WalOptions::with_segments(5);
-    assert_eq!(options.segments, 5);
+    // Test with_segment_size method
+    let options = WalOptions::with_segment_size(512 * 1024);
+    assert_eq!(options.max_segment_size, 512 * 1024);
     assert_eq!(
         options.entry_retention,
         Duration::from_secs(60 * 60 * 24 * 7)
@@ -301,26 +292,24 @@ fn test_segment_id_progression() {
         wal_dir,
         WalOptions {
             entry_retention: Duration::from_secs(6),
-            segments: 3, // 2 second segments
+            max_segment_size: 50, // Small segments
         },
     )
     .unwrap();
 
-    let initial_segment = wal.active_segment_id();
+    let initial_count = wal.active_segment_count();
 
-    // Write entry and wait for rotation
+    // Write entries to different keys
     wal.append_entry("test1", Bytes::from("data1"), true)
         .unwrap();
-
-    thread::sleep(Duration::from_secs(3));
 
     wal.append_entry("test2", Bytes::from("data2"), true)
         .unwrap();
 
-    // Segment ID should have progressed or files should exist
-    let final_segment = wal.active_segment_id();
+    // Should have created separate segments for different keys
+    let final_count = wal.active_segment_count();
 
-    // Either segment ID increased or we have multiple files
+    // Should have created files for different keys
     let log_file_count = fs::read_dir(wal_dir)
         .unwrap()
         .filter_map(|e| e.ok())
@@ -332,7 +321,7 @@ fn test_segment_id_progression() {
         })
         .count();
 
-    assert!(final_segment >= initial_segment || log_file_count > 0);
+    assert!(final_count > initial_count || log_file_count > 0);
 
     wal.shutdown().unwrap();
 }

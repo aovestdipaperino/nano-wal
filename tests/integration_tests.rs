@@ -106,7 +106,7 @@ fn test_database_wal_simulation() {
     }
 
     // Verify all transactions are logged
-    assert_eq!(wal.entry_count(), 5);
+    assert_eq!(wal.active_segment_count(), 5);
 
     // Verify we can read specific transactions
     let txn_001: Vec<Bytes> = wal.enumerate_records("txn_001").unwrap().collect();
@@ -159,8 +159,8 @@ fn test_message_queue_persistence() {
         );
     }
 
-    // Verify total message count
-    assert_eq!(wal.entry_count(), 40);
+    // Verify total active segments (4 topics)
+    assert_eq!(wal.active_segment_count(), 4);
 
     // Verify all topics are enumerated
     let all_topics: Vec<String> = wal.enumerate_keys().unwrap().collect();
@@ -334,8 +334,8 @@ fn test_high_frequency_trading_logs() {
         assert_eq!(trades.len(), 5, "Symbol {} should have 5 trades", symbol);
     }
 
-    // Verify total trade count
-    assert_eq!(wal.entry_count(), 25);
+    // Verify total active segments (5 symbols)
+    assert_eq!(wal.active_segment_count(), 5);
 
     // Test querying specific symbol
     let aapl_trades: Vec<Bytes> = wal.enumerate_records("trades:AAPL").unwrap().collect();
@@ -358,7 +358,7 @@ fn test_log_file_naming_with_meaningful_keys() {
         wal_dir,
         WalOptions {
             entry_retention: Duration::from_secs(20),
-            segments: 4, // 5 second segments
+            max_segment_size: 1024, // 1KB segments
         },
     )
     .unwrap();
@@ -368,13 +368,13 @@ fn test_log_file_naming_with_meaningful_keys() {
         .append_entry("user_events", Bytes::from("user event data"), true)
         .unwrap();
 
-    thread::sleep(Duration::from_secs(6)); // Force segment rotation
+    // No need to wait for time-based rotation with new architecture
 
     let _ref2 = wal
         .append_entry("order_processing", Bytes::from("order data"), true)
         .unwrap();
 
-    thread::sleep(Duration::from_secs(6)); // Force another rotation
+    // Different keys create separate segments automatically
 
     let _ref3 = wal
         .append_entry("payment_logs", Bytes::from("payment data"), true)

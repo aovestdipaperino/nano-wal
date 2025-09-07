@@ -98,22 +98,22 @@ fn test_entry_count() {
 
     let mut wal = Wal::new(wal_dir, WalOptions::default()).unwrap();
 
-    assert_eq!(wal.entry_count(), 0);
+    assert_eq!(wal.active_segment_count(), 0);
 
     let _ref1 = wal
         .append_entry("key1", Bytes::from("value1"), false)
         .unwrap();
-    assert_eq!(wal.entry_count(), 1);
+    assert_eq!(wal.active_segment_count(), 1);
 
     let _ref2 = wal
         .append_entry("key2", Bytes::from("value2"), false)
         .unwrap();
-    assert_eq!(wal.entry_count(), 2);
+    assert_eq!(wal.active_segment_count(), 2);
 
     let _ref3 = wal
         .append_entry("key1", Bytes::from("value1_updated"), false)
         .unwrap();
-    assert_eq!(wal.entry_count(), 3);
+    assert_eq!(wal.active_segment_count(), 2);
 
     wal.shutdown().unwrap();
 }
@@ -146,7 +146,7 @@ fn test_empty_wal_operations() {
     let keys: Vec<String> = wal.enumerate_keys().unwrap().collect();
     assert_eq!(keys.len(), 0);
 
-    assert_eq!(wal.entry_count(), 0);
+    assert_eq!(wal.active_segment_count(), 0);
 
     drop(wal);
 }
