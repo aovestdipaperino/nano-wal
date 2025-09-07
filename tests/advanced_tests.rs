@@ -21,13 +21,15 @@ fn test_segment_rotation_time_based() {
     .unwrap();
 
     // Write some entries and wait for time-based rotation
-    wal.append_entry("key1", Bytes::from("data1"), false)
+    let _ref1 = wal
+        .append_entry("key1", Bytes::from("data1"), false)
         .unwrap();
 
     // Sleep to trigger segment rotation
     thread::sleep(Duration::from_secs(3));
 
-    wal.append_entry("key2", Bytes::from("data2"), false)
+    let _ref2 = wal
+        .append_entry("key2", Bytes::from("data2"), false)
         .unwrap();
 
     // Should have rotated to a new segment or at least have files
@@ -61,10 +63,12 @@ fn test_compaction() {
     )
     .unwrap();
 
-    wal.append_entry("key1", Bytes::from("data1"), true)
+    let _ref1 = wal
+        .append_entry("key1", Bytes::from("data1"), true)
         .unwrap();
     thread::sleep(Duration::from_secs(3));
-    wal.append_entry("key2", Bytes::from("data2"), true)
+    let _ref2 = wal
+        .append_entry("key2", Bytes::from("data2"), true)
         .unwrap();
 
     // Count files before compaction
@@ -110,7 +114,7 @@ fn test_large_number_of_entries() {
     for i in 0..1000 {
         let key = format!("key_{}", i % 10); // 10 unique keys
         let content = Bytes::from(format!("data_{}", i));
-        wal.append_entry(&key, content, i % 100 == 0).unwrap(); // Sync every 100th entry
+        let _ref = wal.append_entry(&key, content, i % 100 == 0).unwrap(); // Sync every 100th entry
     }
 
     // Verify we can read back the data
@@ -137,7 +141,7 @@ fn test_concurrent_like_operations() {
         for i in 0..50 {
             let key = format!("batch_{}_item_{}", batch, i);
             let content = Bytes::from(format!("batch {} item {} data", batch, i));
-            wal.append_entry(&key, content, false).unwrap();
+            let _ref = wal.append_entry(&key, content, false).unwrap();
         }
         // Periodic sync
         wal.sync().unwrap();
@@ -217,7 +221,7 @@ fn test_special_characters_in_keys() {
 
     for (i, key) in test_keys.iter().enumerate() {
         let content = Bytes::from(format!("content_{}", i));
-        wal.append_entry(*key, content.clone(), true).unwrap();
+        let _ref = wal.append_entry(*key, content.clone(), true).unwrap();
 
         // Verify we can read it back
         let records: Vec<Bytes> = wal.enumerate_records(*key).unwrap().collect();
@@ -240,11 +244,12 @@ fn test_empty_and_large_content() {
     let mut wal = Wal::new(wal_dir, WalOptions::default()).unwrap();
 
     // Test empty content
-    wal.append_entry("empty_key", Bytes::new(), true).unwrap();
+    let _ref1 = wal.append_entry("empty_key", Bytes::new(), true).unwrap();
 
     // Test large content
     let large_content = Bytes::from(vec![42u8; 1024 * 100]); // 100KB
-    wal.append_entry("large_key", large_content.clone(), true)
+    let _ref2 = wal
+        .append_entry("large_key", large_content.clone(), true)
         .unwrap();
 
     // Verify empty content

@@ -9,6 +9,18 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// The UTF-8 'NANO-WAL' signature as u32 bytes
+const NANO_WAL_SIGNATURE: [u8; 8] = [b'N', b'A', b'N', b'O', b'-', b'W', b'A', b'L'];
+
+/// A reference to a specific entry location in the WAL
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EntryRef {
+    /// The segment ID where the entry is stored
+    pub segment_id: u64,
+    /// The byte offset within the segment file
+    pub offset: u64,
+}
+
 /// Options for configuring a `Wal`.
 #[derive(Debug, Clone)]
 pub struct WalOptions {
@@ -172,12 +184,16 @@ impl Wal {
     /// * `key` - The key of the entry.
     /// * `content` - The content of the entry.
     /// * `durable` - Whether to ensure the entry is persisted to disk before returning.
+    ///
+    /// # Returns
+    ///
+    /// Returns an `EntryRef` pointing to the location of the written entry.
     pub fn append_entry<K: Hash + AsRef<[u8]> + Display>(
         &mut self,
         key: K,
         content: Bytes,
         durable: bool,
-    ) -> io::Result<()> {
+    ) -> io::Result<EntryRef> {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         key.as_ref().hash(&mut hasher);
         let key_hash = hasher.finish();
@@ -210,7 +226,8 @@ impl Wal {
 
         let current_offset = self.active_segment.seek(SeekFrom::End(0))?;
 
-        // Write entry: timestamp + key_len + key + content_len + content
+        // Write entry: signature + timestamp + key_len + key + content_len + content
+        self.active_segment.write_all(&NANO_WAL_SIGNATURE)?;
         let timestamp = Utc::now().timestamp() as u64;
         self.active_segment.write_all(&timestamp.to_le_bytes())?;
 
@@ -236,7 +253,10 @@ impl Wal {
             .or_default()
             .push((self.active_segment_id, current_offset));
 
-        Ok(())
+        Ok(EntryRef {
+            segment_id: self.active_segment_id,
+            offset: current_offset,
+        })
     }
 
     /// Enumerates the keys in the WAL.
@@ -257,7 +277,8 @@ impl Wal {
                         if filename.starts_with(&format!("{}_", i)) && filename.ends_with(".log") {
                             let segment_path = entry.path();
                             if segment_path.exists() {
-                                let mut segment_reader = File::open(&segment_path)?;
+                                let mut segment_reader =
+                                    File::options().read(true).open(&segment_path)?;
                                 while let Ok(key) = self.read_key(&mut segment_reader) {
                                     keys.insert(String::from_utf8_lossy(&key).to_string());
                                 }
@@ -270,7 +291,7 @@ impl Wal {
             // Also check the simple format
             let segment_path = self.dir.join(format!("{}.log", i));
             if segment_path.exists() {
-                let mut segment_reader = File::open(segment_path)?;
+                let mut segment_reader = File::options().read(true).open(segment_path)?;
                 while let Ok(key) = self.read_key(&mut segment_reader) {
                     keys.insert(String::from_utf8_lossy(&key).to_string());
                 }
@@ -283,8 +304,8 @@ impl Wal {
     }
 
     fn read_key(&self, segment_reader: &mut File) -> Result<Vec<u8>, io::Error> {
-        // Skip timestamp
-        segment_reader.seek(SeekFrom::Current(8))?;
+        // Skip signature and timestamp
+        segment_reader.seek(SeekFrom::Current(8 + 8))?;
 
         // Read key length
         let mut key_len_bytes = [0u8; 8];
@@ -323,7 +344,7 @@ impl Wal {
                 // First try simple format
                 let simple_path = self.dir.join(format!("{}.log", segment_id));
                 if simple_path.exists() {
-                    if let Ok(mut segment_reader) = File::open(&simple_path) {
+                    if let Ok(mut segment_reader) = File::options().read(true).open(&simple_path) {
                         if let Ok(record) = self.read_record_at_offset(&mut segment_reader, offset)
                         {
                             records.push(record);
@@ -340,7 +361,9 @@ impl Wal {
                                 if filename.starts_with(&format!("{}_", segment_id))
                                     && filename.ends_with(".log")
                                 {
-                                    if let Ok(mut segment_reader) = File::open(entry.path()) {
+                                    if let Ok(mut segment_reader) =
+                                        File::options().read(true).open(entry.path())
+                                    {
                                         if let Ok(record) =
                                             self.read_record_at_offset(&mut segment_reader, offset)
                                         {
@@ -363,6 +386,88 @@ impl Wal {
 
     fn read_record_at_offset(&self, segment_reader: &mut File, offset: u64) -> io::Result<Bytes> {
         segment_reader.seek(SeekFrom::Start(offset))?;
+
+        // Skip signature and timestamp
+        segment_reader.seek(SeekFrom::Current(8 + 8))?;
+
+        // Skip key
+        let mut key_len_bytes = [0u8; 8];
+        segment_reader.read_exact(&mut key_len_bytes)?;
+        let key_len = u64::from_le_bytes(key_len_bytes);
+        segment_reader.seek(SeekFrom::Current(key_len as i64))?;
+
+        // Read content
+        let mut content_len_bytes = [0u8; 8];
+        segment_reader.read_exact(&mut content_len_bytes)?;
+        let content_len = u64::from_le_bytes(content_len_bytes);
+        let mut record_bytes = vec![0u8; content_len as usize];
+        segment_reader.read_exact(&mut record_bytes)?;
+
+        Ok(Bytes::from(record_bytes))
+    }
+
+    /// Reads an entry at the specified reference location.
+    ///
+    /// This method allows random access to WAL entries using the EntryRef returned
+    /// from append operations. It verifies the NANO-WAL signature at the specified
+    /// location to ensure data integrity.
+    ///
+    /// # Arguments
+    ///
+    /// * `entry_ref` - The reference to the entry location
+    ///
+    /// # Returns
+    ///
+    /// Returns the entry content as Bytes if found and valid, or an error if the
+    /// signature is not found at the specified location.
+    pub fn read_entry_at(&self, entry_ref: EntryRef) -> io::Result<Bytes> {
+        // Look for files with key suffixes first (most common case)
+        let mut segment_path = None;
+
+        if let Ok(entries) = fs::read_dir(&self.dir) {
+            for entry in entries.flatten() {
+                if let Some(filename) = entry.file_name().to_str() {
+                    if filename.starts_with(&format!("{}_", entry_ref.segment_id))
+                        && filename.ends_with(".log")
+                    {
+                        segment_path = Some(entry.path());
+                        break;
+                    }
+                }
+            }
+        }
+
+        // If not found, try simple format
+        if segment_path.is_none() {
+            let simple_path = self.dir.join(format!("{}.log", entry_ref.segment_id));
+            if simple_path.exists() {
+                segment_path = Some(simple_path);
+            }
+        }
+
+        let segment_path = match segment_path {
+            Some(path) => path,
+            None => {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Segment file for ID {} not found", entry_ref.segment_id),
+                ));
+            }
+        };
+
+        let mut segment_reader = File::options().read(true).open(&segment_path)?;
+        segment_reader.seek(SeekFrom::Start(entry_ref.offset))?;
+
+        // Verify NANO-WAL signature
+        let mut signature_buf = [0u8; 8];
+        segment_reader.read_exact(&mut signature_buf)?;
+
+        if signature_buf != NANO_WAL_SIGNATURE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "NANO-WAL signature not found at specified location",
+            ));
+        }
 
         // Skip timestamp
         segment_reader.seek(SeekFrom::Current(8))?;
@@ -401,13 +506,18 @@ impl Wal {
                     if filename.ends_with(".log") {
                         let segment_path = entry.path();
 
-                        let mut segment_reader = File::open(&segment_path)?;
-                        let mut timestamp_bytes = [0u8; 8];
-                        if segment_reader.read_exact(&mut timestamp_bytes).is_ok() {
-                            let timestamp = u64::from_le_bytes(timestamp_bytes);
-                            if now - timestamp > retention_secs {
-                                drop(segment_reader); // Close file before deletion
-                                fs::remove_file(&segment_path)?;
+                        let mut segment_reader = File::options().read(true).open(&segment_path)?;
+                        let mut signature_buf = [0u8; 8];
+                        if segment_reader.read_exact(&mut signature_buf).is_ok()
+                            && signature_buf == NANO_WAL_SIGNATURE
+                        {
+                            let mut timestamp_bytes = [0u8; 8];
+                            if segment_reader.read_exact(&mut timestamp_bytes).is_ok() {
+                                let timestamp = u64::from_le_bytes(timestamp_bytes);
+                                if now > timestamp && now - timestamp > retention_secs {
+                                    drop(segment_reader); // Close file before deletion
+                                    fs::remove_file(&segment_path)?;
+                                }
                             }
                         }
                     }
@@ -443,11 +553,24 @@ impl Wal {
                         max_segment_id = max_segment_id.max(segment_id);
 
                         let segment_path = entry.path();
-                        if let Ok(mut segment_reader) = File::open(&segment_path) {
+                        if let Ok(mut segment_reader) =
+                            File::options().read(true).open(&segment_path)
+                        {
                             let mut offset = 0u64;
 
                             loop {
                                 let current_offset = offset;
+
+                                // Read and verify signature
+                                let mut signature_buf = [0u8; 8];
+                                if segment_reader.read_exact(&mut signature_buf).is_err() {
+                                    break;
+                                }
+                                if signature_buf != NANO_WAL_SIGNATURE {
+                                    // Invalid signature, stop processing this file
+                                    break;
+                                }
+                                offset += 8;
 
                                 // Read timestamp
                                 let mut timestamp_bytes = [0u8; 8];
@@ -531,11 +654,15 @@ impl Wal {
     }
 
     /// Logs an entry to the WAL with durability enabled.
+    ///
+    /// # Returns
+    ///
+    /// Returns an `EntryRef` pointing to the location of the written entry.
     pub fn log_entry<K: Hash + AsRef<[u8]> + Display>(
         &mut self,
         key: K,
         content: Bytes,
-    ) -> io::Result<()> {
+    ) -> io::Result<EntryRef> {
         self.append_entry(key, content, true)
     }
 

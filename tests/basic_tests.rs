@@ -22,10 +22,10 @@ fn test_append_and_log() {
 
     let mut wal = Wal::new(wal_dir, WalOptions::default()).unwrap();
     let content1 = Bytes::from("hello");
-    wal.append_entry("key1", content1, false).unwrap();
+    let _ref1 = wal.append_entry("key1", content1, false).unwrap();
 
     let content2 = Bytes::from("world");
-    wal.log_entry("key2", content2).unwrap();
+    let _ref2 = wal.log_entry("key2", content2).unwrap();
 
     wal.shutdown().unwrap();
 }
@@ -39,8 +39,8 @@ fn test_append_and_enumerate() {
     let content1 = Bytes::from("hello");
     let content2 = Bytes::from("world");
 
-    wal.append_entry("key1", content1.clone(), false).unwrap();
-    wal.append_entry("key2", content2.clone(), false).unwrap();
+    let _ref1 = wal.append_entry("key1", content1.clone(), false).unwrap();
+    let _ref2 = wal.append_entry("key2", content2.clone(), false).unwrap();
 
     let records: Vec<Bytes> = wal.enumerate_records("key1").unwrap().collect();
     assert_eq!(records.len(), 1);
@@ -56,9 +56,9 @@ fn test_enumerate_keys() {
 
     let mut wal = Wal::new(wal_dir, WalOptions::default()).unwrap();
 
-    wal.append_entry("key1", Bytes::from("1"), false).unwrap();
-    wal.append_entry("key2", Bytes::from("2"), false).unwrap();
-    wal.append_entry("key1", Bytes::from("3"), false).unwrap();
+    let _ref1 = wal.append_entry("key1", Bytes::from("1"), false).unwrap();
+    let _ref2 = wal.append_entry("key2", Bytes::from("2"), false).unwrap();
+    let _ref3 = wal.append_entry("key1", Bytes::from("3"), false).unwrap();
 
     let keys: Vec<String> = wal.enumerate_keys().unwrap().collect();
     assert_eq!(keys.len(), 2);
@@ -75,11 +75,14 @@ fn test_multiple_records_same_key() {
 
     let mut wal = Wal::new(wal_dir, WalOptions::default()).unwrap();
 
-    wal.append_entry("key1", Bytes::from("value1"), false)
+    let _ref1 = wal
+        .append_entry("key1", Bytes::from("value1"), false)
         .unwrap();
-    wal.append_entry("key1", Bytes::from("value2"), false)
+    let _ref2 = wal
+        .append_entry("key1", Bytes::from("value2"), false)
         .unwrap();
-    wal.append_entry("key1", Bytes::from("value3"), false)
+    let _ref3 = wal
+        .append_entry("key1", Bytes::from("value3"), false)
         .unwrap();
 
     let records: Vec<Bytes> = wal.enumerate_records("key1").unwrap().collect();
@@ -97,15 +100,18 @@ fn test_entry_count() {
 
     assert_eq!(wal.entry_count(), 0);
 
-    wal.append_entry("key1", Bytes::from("value1"), false)
+    let _ref1 = wal
+        .append_entry("key1", Bytes::from("value1"), false)
         .unwrap();
     assert_eq!(wal.entry_count(), 1);
 
-    wal.append_entry("key2", Bytes::from("value2"), false)
+    let _ref2 = wal
+        .append_entry("key2", Bytes::from("value2"), false)
         .unwrap();
     assert_eq!(wal.entry_count(), 2);
 
-    wal.append_entry("key1", Bytes::from("value1_updated"), false)
+    let _ref3 = wal
+        .append_entry("key1", Bytes::from("value1_updated"), false)
         .unwrap();
     assert_eq!(wal.entry_count(), 3);
 
@@ -119,7 +125,8 @@ fn test_sync() {
 
     let mut wal = Wal::new(wal_dir, WalOptions::default()).unwrap();
 
-    wal.append_entry("key1", Bytes::from("value1"), false)
+    let _ref1 = wal
+        .append_entry("key1", Bytes::from("value1"), false)
         .unwrap();
     wal.sync().unwrap();
 
@@ -150,7 +157,8 @@ fn test_log_file_extension() {
     let wal_dir = temp_dir.path().to_str().unwrap();
 
     let mut wal = Wal::new(wal_dir, WalOptions::default()).unwrap();
-    wal.append_entry("test_key", Bytes::from("test_data"), true)
+    let _ref1 = wal
+        .append_entry("test_key", Bytes::from("test_data"), true)
         .unwrap();
 
     // Check that .log files are created
@@ -178,12 +186,14 @@ fn test_key_in_filename() {
     let mut wal = Wal::new(wal_dir, WalOptions::default()).unwrap();
 
     // Use a key that should appear in the filename
-    wal.append_entry("user123", Bytes::from("user_data"), true)
+    let _ref1 = wal
+        .append_entry("user123", Bytes::from("user_data"), true)
         .unwrap();
 
     // Force segment rotation
     std::thread::sleep(std::time::Duration::from_millis(100));
-    wal.append_entry("order456", Bytes::from("order_data"), true)
+    let _ref2 = wal
+        .append_entry("order456", Bytes::from("order_data"), true)
         .unwrap();
 
     // Check that filenames contain key information
