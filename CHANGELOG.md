@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.0] - 2024-01-02
+## [0.3.0] - 2025-09-07
 
 ### Added
 - **Segment expiration timestamps**: Each segment now stores its expiration timestamp in the file header for precise cleanup
@@ -40,7 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **File format compatibility** - Header format changed but entry format remains the same
 - **Predictable rotation** - Segments now expire on fixed schedules rather than unpredictable size thresholds
 
-## [0.2.0] - 2024-01-01
+## [0.2.0] - 2025-09-07
 
 ### Added
 - **Per-key segment sets**: Each key now gets its own set of numbered segment files for optimal organization
@@ -75,7 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Key design consideration** - Keys should represent logical partitions (e.g., "topic:partition")
 - **EntryRef handling** - Update code to handle new EntryRef structure with key_hash and sequence_number
 
-## [0.1.1] - 2024-01-01
+## [0.1.1] - 2025-09-07
 
 ### Added
 - **NANO-WAL signature prefix**: Each entry now begins with UTF-8 'NANO-WAL' signature (8 bytes) for format validation and data integrity
@@ -109,7 +109,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **API updates**: Update method calls to handle `EntryRef` return values
 - **Key types**: Ensure keys implement `Display` trait (most common types like `String` and `&str` already do)
 
-## [0.1.0] - 2024-01-01
+## [0.1.0] - 2025-09-07
 
 ### Added
 - Initial release of nano-wal
