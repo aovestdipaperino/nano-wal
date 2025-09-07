@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.0] - 2024-01-02
+## [0.4.0] - 2025-09-07
 
 ### Added
 - **Optional record headers**: Each record can now include optional metadata headers up to 64KB in size
@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Header validation**: Automatic validation of header size limits with descriptive error messages
 - **Comprehensive examples**: Three detailed examples demonstrating real-world usage patterns:
   - Event Sourcing with CQRS pattern (`examples/event_sourcing_cqrs.rs`)
-  - Distributed Messaging System (`examples/distributed_messaging.rs`) 
+  - Distributed Messaging System (`examples/distributed_messaging.rs`)
   - Real-time Analytics Pipeline (`examples/realtime_analytics.rs`)
 
 ### Changed
