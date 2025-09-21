@@ -133,7 +133,10 @@ fn test_read_entry_at_invalid_signature() {
     // Should return error due to missing segment file
     let result = wal.read_entry_at(invalid_ref);
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::NotFound);
+    assert!(matches!(
+        result.unwrap_err(),
+        nano_wal::WalError::EntryNotFound(_)
+    ));
 
     wal.shutdown().unwrap();
 }
@@ -155,7 +158,10 @@ fn test_read_entry_at_nonexistent_segment() {
     // Should return error due to missing segment file
     let result = wal.read_entry_at(invalid_ref);
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::NotFound);
+    assert!(matches!(
+        result.unwrap_err(),
+        nano_wal::WalError::EntryNotFound(_)
+    ));
 
     drop(wal);
 }

@@ -277,7 +277,7 @@ fn test_header_functionality() {
     assert!(result
         .unwrap_err()
         .to_string()
-        .contains("Header size cannot exceed 64KB"));
+        .contains("Header size 65536 exceeds maximum 65535"));
 
     // Verify we can still read the content (header is internal)
     let records: Vec<Bytes> = wal.enumerate_records("test_key").unwrap().collect();

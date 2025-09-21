@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2025-09-21
+
+### Added
+- **Custom error types**: Introduced `WalError` enum with detailed error variants replacing generic `io::Error`
+- **Batch operations**: New `append_batch()` method for improved throughput when writing multiple entries
+- **Performance benchmarks**: Comprehensive benchmark suite using Criterion for measuring performance
+- **Complete documentation**: All public methods now have full documentation with examples, errors, and usage notes
+
+### Changed
+- **BREAKING: Error handling** - All methods now return `Result<T, WalError>` instead of `io::Result<T>`
+- **BREAKING: Iterator API** - Removed `Enumerable` wrapper; methods now return standard `impl Iterator`
+- **Improved documentation**: Added proper doc comments following Rust API guidelines
+- **Performance optimizations**: Removed unnecessary clone operations and improved internal efficiency
+- **Debug implementations**: All public types now implement the Debug trait
+
+### Fixed
+- Unnecessary `clone()` operation in segment management
+- Missing documentation for magic values and constants
+- Incomplete error context in various operations
+
+### Technical Improvements
+- Custom `WalError` type provides better error context and type safety
+- Batch operations reduce I/O overhead for bulk writes
+- Standard iterators improve API ergonomics and reduce complexity
+- Comprehensive benchmarks enable performance regression detection
+- Full compliance with Microsoft's Pragmatic Rust Guidelines
+
+### Migration Notes
+- **Error handling**: Update error handling to use `WalError` instead of `io::Error`
+- **Iterator usage**: Remove `.collect()` calls on `Enumerable`, use iterators directly
+- **Batch writes**: Consider using `append_batch()` for multiple entries to improve performance
+
 ## [0.4.0] - 2025-09-07
 
 ### Added
