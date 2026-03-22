@@ -1,5 +1,6 @@
 use std::fmt;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -158,6 +159,136 @@ impl Wal {
     /// Returns true if the WAL has been shut down.
     pub fn is_shutdown(&self) -> bool {
         self.shutdown.load(Ordering::Acquire)
+    }
+
+    /// Append a single record to the WAL.
+    ///
+    /// Writes `[NANORC (6)][header_len LE u16 (2)][header bytes][content_len LE u64 (8)][content bytes]`
+    /// using vectored I/O (writev) for a single syscall.  Returns an [`EntryRef`] with the file
+    /// offset and total byte size of the written record.
+    ///
+    /// If `durable` is true, an `fdatasync` is issued after the write.
+    pub fn append(
+        &self,
+        header: Option<&[u8]>,
+        content: &[u8],
+        ingestion_time: i64,
+        durable: bool,
+    ) -> Result<crate::EntryRef> {
+        if let Some(h) = header {
+            if h.len() > crate::MAX_HEADER_SIZE {
+                return Err(WalError::HeaderTooLarge { size: h.len(), max: crate::MAX_HEADER_SIZE });
+            }
+        }
+
+        let segment = self.ensure_segment(ingestion_time)?;
+        let mut file = segment.file.lock().unwrap_or_else(|p| p.into_inner());
+
+        // Use atomic file_size as offset — avoids seek issues with append mode
+        let file_offset = segment.file_size();
+
+        let header_bytes = header.unwrap_or(&[]);
+        let header_len = (header_bytes.len() as u16).to_le_bytes();
+        let content_len = (content.len() as u64).to_le_bytes();
+
+        let iovecs = [
+            std::io::IoSlice::new(&crate::NANO_REC_SIGNATURE),
+            std::io::IoSlice::new(&header_len),
+            std::io::IoSlice::new(header_bytes),
+            std::io::IoSlice::new(&content_len),
+            std::io::IoSlice::new(content),
+        ];
+
+        let byte_size = crate::RECORD_FRAMING_SIZE + header_bytes.len() + content.len();
+        let written = file.write_vectored(&iovecs)?;
+        if written != byte_size {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                format!("short writev: expected {}, wrote {}", byte_size, written),
+            ).into());
+        }
+
+        if durable {
+            file.sync_data()?;
+        }
+
+        segment.add_file_size(byte_size as u64);
+
+        Ok(crate::EntryRef { file_offset, byte_size })
+    }
+
+    /// Append a batch of records to the WAL in a single vectored write.
+    ///
+    /// All entries are validated, then written as one `writev` syscall to the active
+    /// segment. Returns a `Vec<EntryRef>` with one entry per input record.
+    ///
+    /// If `durable` is true, an `fdatasync` is issued after the batch write.
+    pub fn append_batch(
+        &self,
+        entries: &[crate::WriteEntry],
+        ingestion_time: i64,
+        durable: bool,
+    ) -> Result<Vec<crate::EntryRef>> {
+        if entries.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        for entry in entries {
+            if let Some(h) = entry.header {
+                if h.len() > crate::MAX_HEADER_SIZE {
+                    return Err(WalError::HeaderTooLarge { size: h.len(), max: crate::MAX_HEADER_SIZE });
+                }
+            }
+        }
+
+        let segment = self.ensure_segment(ingestion_time)?;
+        let mut file = segment.file.lock().unwrap_or_else(|p| p.into_inner());
+        let file_offset_start = segment.file_size();
+
+        // Pre-encode frames
+        let mut header_lens: Vec<[u8; 2]> = Vec::with_capacity(entries.len());
+        let mut content_lens: Vec<[u8; 8]> = Vec::with_capacity(entries.len());
+        let mut byte_sizes: Vec<usize> = Vec::with_capacity(entries.len());
+
+        for entry in entries {
+            let hdr = entry.header.unwrap_or(&[]);
+            header_lens.push((hdr.len() as u16).to_le_bytes());
+            content_lens.push((entry.content.len() as u64).to_le_bytes());
+            byte_sizes.push(crate::RECORD_FRAMING_SIZE + hdr.len() + entry.content.len());
+        }
+
+        // Build iovecs: always include header slice even when empty
+        let mut iovecs: Vec<std::io::IoSlice> = Vec::with_capacity(entries.len() * 5);
+        for (i, entry) in entries.iter().enumerate() {
+            let hdr = entry.header.unwrap_or(&[]);
+            iovecs.push(std::io::IoSlice::new(&crate::NANO_REC_SIGNATURE));
+            iovecs.push(std::io::IoSlice::new(&header_lens[i]));
+            iovecs.push(std::io::IoSlice::new(hdr));
+            iovecs.push(std::io::IoSlice::new(&content_lens[i]));
+            iovecs.push(std::io::IoSlice::new(entry.content));
+        }
+
+        let total_bytes: usize = byte_sizes.iter().sum();
+        let written = file.write_vectored(&iovecs)?;
+        if written != total_bytes {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                format!("short batch writev: expected {}, wrote {}", total_bytes, written),
+            ).into());
+        }
+
+        if durable { file.sync_data()?; }
+
+        segment.add_file_size(total_bytes as u64);
+
+        let mut refs = Vec::with_capacity(entries.len());
+        let mut offset = file_offset_start;
+        for size in byte_sizes {
+            refs.push(crate::EntryRef { file_offset: offset, byte_size: size });
+            offset += size as u64;
+        }
+
+        Ok(refs)
     }
 
     /// Accessor for the directory path (used by cleanup).
@@ -329,6 +460,63 @@ mod tests {
         wal.shutdown().unwrap();
         assert!(wal.is_shutdown());
         let err = wal.ensure_segment(1_000_000).unwrap_err();
+        assert!(matches!(err, WalError::Shutdown));
+    }
+
+    use crate::FILE_HEADER_SIZE;
+
+    #[test]
+    fn test_append_single() {
+        let dir = TempDir::new().unwrap();
+        let wal = Wal::new(dir.path(), "app", test_options()).unwrap();
+        let now = 1_711_234_567_890i64;
+        let entry = wal.append(None, b"hello", now, false).unwrap();
+        assert_eq!(entry.file_offset, FILE_HEADER_SIZE as u64);
+        // NANORC(6) + header_len(2) + content_len(8) + "hello"(5) = 21
+        assert_eq!(entry.byte_size, 6 + 2 + 8 + 5);
+    }
+
+    #[test]
+    fn test_append_with_header() {
+        let dir = TempDir::new().unwrap();
+        let wal = Wal::new(dir.path(), "hdr", test_options()).unwrap();
+        let now = 1_711_234_567_890i64;
+        let entry = wal.append(Some(b"meta"), b"data", now, false).unwrap();
+        // NANORC(6) + header_len(2) + "meta"(4) + content_len(8) + "data"(4) = 24
+        assert_eq!(entry.byte_size, 6 + 2 + 4 + 8 + 4);
+    }
+
+    #[test]
+    fn test_append_header_too_large() {
+        let dir = TempDir::new().unwrap();
+        let wal = Wal::new(dir.path(), "big", test_options()).unwrap();
+        let big_header = vec![0u8; 70000];
+        let err = wal.append(Some(&big_header), b"data", 1_000_000, false).unwrap_err();
+        assert!(matches!(err, WalError::HeaderTooLarge { .. }));
+    }
+
+    #[test]
+    fn test_append_batch_multiple() {
+        let dir = TempDir::new().unwrap();
+        let wal = Wal::new(dir.path(), "batch", test_options()).unwrap();
+        let now = 1_711_234_567_890i64;
+        let entries = vec![
+            crate::WriteEntry { header: None, content: b"one" },
+            crate::WriteEntry { header: None, content: b"two" },
+            crate::WriteEntry { header: Some(b"m"), content: b"three" },
+        ];
+        let refs = wal.append_batch(&entries, now, false).unwrap();
+        assert_eq!(refs.len(), 3);
+        assert_eq!(refs[0].file_offset, FILE_HEADER_SIZE as u64);
+        assert_eq!(refs[1].file_offset, refs[0].file_offset + refs[0].byte_size as u64);
+    }
+
+    #[test]
+    fn test_append_after_shutdown() {
+        let dir = TempDir::new().unwrap();
+        let wal = Wal::new(dir.path(), "sd", test_options()).unwrap();
+        wal.shutdown().unwrap();
+        let err = wal.append(None, b"nope", 1_000_000, false).unwrap_err();
         assert!(matches!(err, WalError::Shutdown));
     }
 }
