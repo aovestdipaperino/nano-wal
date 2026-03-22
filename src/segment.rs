@@ -67,7 +67,7 @@ impl Segment {
         })?;
 
         // Validate magic
-        if &header[..8] != &NANO_LOG_SIGNATURE {
+        if header[..8] != NANO_LOG_SIGNATURE {
             return Err(WalError::CorruptedData(format!(
                 "invalid segment magic: expected NANO-LOG, got {:?}",
                 &header[..8]

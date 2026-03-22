@@ -73,7 +73,7 @@ fn parse_record(buf: &[u8]) -> Result<Record> {
     }
 
     // Validate signature
-    if &buf[0..6] != &NANO_REC_SIGNATURE {
+    if buf[0..6] != NANO_REC_SIGNATURE {
         return Err(WalError::CorruptedData(format!(
             "invalid record signature: expected NANORC, got {:?}",
             &buf[0..6]

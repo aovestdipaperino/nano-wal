@@ -139,10 +139,7 @@ impl Wal {
         let current = self.active_segment.load();
         if let Some(ref seg) = **current {
             let file = seg.file.lock().map_err(|e| {
-                WalError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    e.to_string(),
-                ))
+                WalError::Io(std::io::Error::other(e.to_string()))
             })?;
             file.sync_data()?;
         }
@@ -308,6 +305,7 @@ impl Wal {
     }
 
     /// Accessor for the prefix (used by cleanup).
+    #[allow(dead_code)]
     pub(crate) fn prefix(&self) -> &str {
         &self.prefix
     }

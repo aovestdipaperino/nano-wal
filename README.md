@@ -2,357 +2,248 @@
 
 ![nano-wal](nano-wal.png)
 
-A simple, lightweight Write-Ahead Log (WAL) implementation in Rust with per-key segment sets, designed for append-only operations with configurable retention and random access for memory-constrained systems.
+A concurrent Write-Ahead Log (WAL) in Rust with lock-free segment rotation, vectored I/O, and coalesced batch reads. Designed for high-throughput, multi-threaded workloads where readers and writers must not block each other.
 
-## Features
+## What's New in v1.0.0
 
-- **Per-key segment sets**: Each key gets its own set of segment files for optimal organization
-- **Entry references**: Get position references for written entries enabling random access
-- **Random access reads**: Read specific entries directly using their references with signature verification
-- **Custom error types**: Comprehensive `WalError` enum for detailed error handling
-- **Batch operations**: High-throughput batch append operations for bulk writes
-- **Optional headers**: Attach metadata headers up to 64KB per entry
-- **Configurable retention**: Automatic cleanup of old files based on time-based retention policies
-- **Memory-efficient**: Zero RAM overhead with optional random access for memory-constrained systems
-- **Full compliance**: 100% compliant with Microsoft's Pragmatic Rust Guidelines
+v1.0.0 is a ground-up rewrite. The API has changed — this is not backward compatible with 0.5.x.
+
+| Change | Benefit |
+|---|---|
+| **`&self` API with interior mutability** | `Wal` is `Send + Sync` — share via `Arc<Wal>` across threads with no external locking |
+| **CAS-based segment rotation** | Lock-free rotation via `ArcSwap`. Multiple threads can trigger rotation without blocking each other |
+| **Dup'd read file descriptors** | Readers use an independent fd via `libc::dup()` — zero contention with writers, no shared file position |
+| **Coalesced `preadv` batch reads** | `read_batch()` groups reads by fd, detects contiguous runs, and coalesces up to 512 entries into a single syscall |
+| **Vectored writes (`writev`)** | `append_batch()` writes multiple records in a single `write_vectored` call — one syscall for N records |
+| **Clock-aligned segment expiration** | Segments rotate on predictable time boundaries, not ingestion time. Simplifies reasoning about retention |
+| **NANORC record framing** | Each record has a 6-byte signature for boundary detection and corruption recovery |
+| **Structured cleanup results** | `cleanup()` returns `CleanupResult` with deleted files, byte counts, and live segment count — wire up your own metrics |
+| **Startup recovery** | `Wal::new()` scans for existing segments and reopens the latest non-expired one. Handles process restarts |
+| **Flat directory layout** | Segments use a caller-provided prefix (`{prefix}_{expiration}.seg`). Multiple WAL instances can share a directory |
+| **Dropped `chrono` dependency** | Timestamps are caller-provided `i64` milliseconds. No runtime clock dependency |
+
+### Removed from 0.5.x
+
+- Per-key hash-based segment routing (replaced by one WAL instance per stream)
+- `enumerate_keys()`, `enumerate_records()` (no key concept in v1)
+- `shutdown()` that deletes all files (v1 shutdown is non-destructive)
+- `log_entry()` convenience wrapper
+- `chrono` dependency
 
 ## Installation
 
-Add this to your `Cargo.toml`:
-
 ```toml
 [dependencies]
-nano-wal = "0.5.0"
+nano-wal = "1.0.0"
 ```
 
 ## Quick Start
 
 ```rust
-use nano_wal::{Wal, WalOptions, EntryRef, WalError};
-use bytes::Bytes;
+use nano_wal::{Wal, WalOptions, ReadDescriptor, read_batch};
+use std::sync::Arc;
 use std::time::Duration;
 
-fn main() -> Result<(), WalError> {
-    // Create a new WAL with default options
-    let mut wal = Wal::new("./my_wal", WalOptions::default())?;
+fn main() -> Result<(), nano_wal::WalError> {
+    let options = WalOptions {
+        retention: Duration::from_secs(3600),       // 1 hour
+        segment_duration: Duration::from_secs(600), // 10-minute windows
+    };
+    let wal = Arc::new(Wal::new("./my_wal", "stream-0", options)?);
 
-    // Append an entry and get its reference
-    let content = Bytes::from("Hello, World!");
-    let entry_ref = wal.append_entry("my_key", None, content, false)?;
+    let now_ms = 1_711_234_567_890i64;
 
-    // Append an entry with optional header
-    let header = Some(Bytes::from("metadata:version=1"));
-    let content_with_header = Bytes::from("Data with metadata");
-    let header_ref = wal.append_entry("my_key", header, content_with_header, false)?;
+    // Append a record
+    let entry = wal.append(None, b"hello world", now_ms, false)?;
 
-    // Log an entry with durability (forced sync to disk)
-    let durable_content = Bytes::from("Important data");
-    let durable_ref = wal.log_entry("important_key", None, durable_content)?;
+    // Append with metadata header
+    let entry2 = wal.append(Some(b"meta"), b"payload", now_ms, false)?;
 
-    // Random access: read specific entry using its reference
-    let retrieved_content = wal.read_entry_at(entry_ref)?;
+    // Read it back
+    let seg = wal.ensure_segment(now_ms)?;
+    let record = wal.read_at(&seg, entry.file_offset, entry.byte_size)?;
+    assert_eq!(record.content.as_ref(), b"hello world");
 
-    // Sequential access: retrieve all records for a key
-    let records: Vec<Bytes> = wal.enumerate_records("my_key")?.collect();
-
-    // Enumerate all keys
-    let keys: Vec<String> = wal.enumerate_keys()?.collect();
-
-    // Compact the WAL (remove expired segments)
-    wal.compact()?;
-
-    // Clean shutdown
-    wal.shutdown()?;
-    
-    Ok(())
-}
-```
-
-## Batch Operations (New in v0.5.0)
-
-For improved throughput when writing multiple entries:
-
-```rust
-use nano_wal::{Wal, WalOptions, WalError};
-use bytes::Bytes;
-
-fn main() -> Result<(), WalError> {
-    let mut wal = Wal::new("./batch_wal", WalOptions::default())?;
-    
-    // Prepare batch of entries
-    let entries = vec![
-        ("user:1", None, Bytes::from("Alice")),
-        ("user:2", Some(Bytes::from("meta")), Bytes::from("Bob")),
-        ("user:3", None, Bytes::from("Charlie")),
+    // Batch read — coalesced into minimal syscalls
+    let descs = vec![
+        ReadDescriptor {
+            read_fd: seg.read_fd().clone(),
+            file_offset: entry.file_offset,
+            byte_size: entry.byte_size,
+        },
+        ReadDescriptor {
+            read_fd: seg.read_fd().clone(),
+            file_offset: entry2.file_offset,
+            byte_size: entry2.byte_size,
+        },
     ];
-    
-    // Write all entries in a single batch operation
-    let refs = wal.append_batch(entries, true)?; // true = durable
-    
-    println!("Wrote {} entries in batch", refs.len());
-    
+    let records = read_batch(&descs)?;
+    assert_eq!(records.len(), 2);
+
+    // Cleanup expired segments
+    let result = wal.cleanup()?;
+    println!("Deleted {} segments, reclaimed {} bytes", result.deleted.len(), result.bytes_reclaimed);
+
+    // Graceful shutdown
     wal.shutdown()?;
+
     Ok(())
 }
 ```
 
-Batch operations can improve throughput by up to 50% for bulk writes by reducing I/O overhead.
+## Concurrent Writers
 
-## Error Handling (Improved in v0.5.0)
-
-The library now uses a custom `WalError` type for comprehensive error handling:
-
-```rust
-use nano_wal::{Wal, WalOptions, WalError};
-
-match Wal::new("./wal", WalOptions::default()) {
-    Ok(wal) => println!("WAL created successfully"),
-    Err(WalError::Io(e)) => eprintln!("I/O error: {}", e),
-    Err(WalError::InvalidConfig(msg)) => eprintln!("Config error: {}", msg),
-    Err(e) => eprintln!("Other error: {}", e),
-}
-```
-
-Error variants include:
-- `WalError::Io(io::Error)` - I/O operation failures
-- `WalError::InvalidConfig(String)` - Invalid configuration
-- `WalError::EntryNotFound(String)` - Entry not found at reference
-- `WalError::CorruptedData(String)` - Data corruption detected
-- `WalError::HeaderTooLarge` - Header exceeds 64KB limit
-
-## Configuration
-
-Customize WAL behavior with `WalOptions`:
+`Wal` is `Send + Sync`. Share it across threads with `Arc<Wal>`:
 
 ```rust
 use nano_wal::{Wal, WalOptions};
+use std::sync::Arc;
 use std::time::Duration;
 
-// Using builder pattern
-let options = WalOptions::default()
-    .retention(Duration::from_secs(60 * 60 * 24))  // 1 day
-    .segments_per_retention_period(24);             // 24 segments
+let wal = Arc::new(Wal::new("./wal", "partition-0", WalOptions {
+    retention: Duration::from_secs(3600),
+    segment_duration: Duration::from_secs(600),
+}).unwrap());
 
-let mut wal = Wal::new("./custom_wal", options)?;
+let mut handles = Vec::new();
+for i in 0..4 {
+    let wal = wal.clone();
+    handles.push(std::thread::spawn(move || {
+        let now = 1_711_234_567_890i64;
+        for _ in 0..1000 {
+            wal.append(None, format!("thread-{}", i).as_bytes(), now, false).unwrap();
+        }
+    }));
+}
+for h in handles { h.join().unwrap(); }
 ```
 
-### Configuration Options
+Writers acquire a `Mutex<File>` for the active segment. Readers use an independent dup'd fd via `preadv` — no contention with writers.
 
-- `entry_retention`: Duration for which entries are retained before being eligible for compaction (default: 1 week)
-- `segments_per_retention_period`: Number of segments per retention period for time-based expiration (default: 10)
+## Batch Operations
+
+Write multiple records in a single `writev` syscall:
+
+```rust
+use nano_wal::{Wal, WalOptions, WriteEntry};
+use std::time::Duration;
+
+let wal = Wal::new("./wal", "batch", WalOptions {
+    retention: Duration::from_secs(3600),
+    segment_duration: Duration::from_secs(600),
+}).unwrap();
+
+let entries = vec![
+    WriteEntry { header: None, content: b"first" },
+    WriteEntry { header: Some(b"meta"), content: b"second" },
+    WriteEntry { header: None, content: b"third" },
+];
+let refs = wal.append_batch(&entries, 1_711_234_567_890, false).unwrap();
+assert_eq!(refs.len(), 3);
+```
+
+## Configuration
+
+```rust
+use nano_wal::WalOptions;
+use std::time::Duration;
+
+let options = WalOptions {
+    // How long entries are retained before segments expire
+    retention: Duration::from_secs(86400), // 1 day
+
+    // Segment rotation interval (clock-aligned)
+    // Must be <= retention
+    segment_duration: Duration::from_secs(3600), // 1 hour windows
+};
+```
+
+Segments rotate on clock-aligned boundaries. Expiration is calculated as:
+```
+window_start = (ingestion_time / segment_duration) * segment_duration
+expiration = window_start + segment_duration + retention
+```
 
 ## API Reference
 
-### Core Methods
+### Wal
 
-- `new(filepath: &str, options: WalOptions) -> Result<Wal>` - Create a new WAL instance
-- `append_entry<K>(key: K, header: Option<Bytes>, content: Bytes, durable: bool) -> Result<EntryRef>` - Append an entry with optional header
-- `append_batch<K, I>(entries: I, durable: bool) -> Result<Vec<EntryRef>>` - Append multiple entries in batch
-- `log_entry<K>(key: K, header: Option<Bytes>, content: Bytes) -> Result<EntryRef>` - Append with durability
-- `read_entry_at(entry_ref: EntryRef) -> Result<Bytes>` - Read specific entry using reference
-- `enumerate_records<K>(key: K) -> Result<impl Iterator<Item = Bytes>>` - Get all records for a key
-- `enumerate_keys() -> Result<impl Iterator<Item = String>>` - Get all unique keys
-- `compact() -> Result<()>` - Remove expired segment files
-- `sync() -> Result<()>` - Sync all active segments to disk
-- `shutdown() -> Result<()>` - Clean shutdown and remove all files
+| Method | Description |
+|---|---|
+| `new(dir, prefix, options)` | Create WAL, recover existing segments |
+| `ensure_segment(ingestion_time)` | Get or create active segment (CAS rotation) |
+| `append(header, content, ingestion_time, durable)` | Append single record |
+| `append_batch(entries, ingestion_time, durable)` | Append multiple records in one `writev` |
+| `read_at(segment, offset, size)` | Read single record via `preadv` |
+| `cleanup()` | Delete expired segments, return `CleanupResult` |
+| `sync()` | `fdatasync` the active segment |
+| `shutdown()` | Sync and close. Further writes return `WalError::Shutdown` |
 
-### Key Types
+### Segment
 
-Keys must implement `Hash + AsRef<[u8]> + Display` for append operations. Common types like `String`, `&str`, and custom types that implement Display work seamlessly.
+| Method | Description |
+|---|---|
+| `read_fd()` | Dup'd fd for lock-free `preadv` reads |
+| `file_size()` | Total bytes written |
+| `expiration_ms()` | Immutable expiration timestamp |
+| `path()` | Filesystem path |
 
-### Entry References
+### Free Function
 
-`EntryRef` is a lightweight reference containing:
-- `key_hash: u64` - Hash of the key for segment set identification
-- `sequence_number: u64` - The sequence number of the segment file
-- `offset: u64` - The byte offset within the segment file
+| Function | Description |
+|---|---|
+| `read_batch(descriptors)` | Coalesced multi-entry read. Groups by fd, detects contiguous runs, minimal syscalls |
 
-## Performance
+### Types
 
-The library includes comprehensive benchmarks. Run them with:
-
-```bash
-cargo bench
-```
-
-### Benchmark Results (M1 MacBook Pro)
-
-- **Single append (non-durable)**: ~15 μs
-- **Single append (durable)**: ~500 μs
-- **Batch append (10 entries)**: ~50 μs
-- **Batch append (100 entries)**: ~400 μs
-- **Random read**: ~8 μs
-- **Sequential scan (100 entries)**: ~200 μs
-
-### Performance Tips
-
-1. Use batch operations for bulk writes (up to 50% improvement)
-2. Disable durability for non-critical data (30x faster)
-3. Configure appropriate retention periods to balance storage and performance
-4. Use per-key segments to isolate workloads
+- `EntryRef` — `{ file_offset: u64, byte_size: usize }` returned from append
+- `WriteEntry` — `{ header: Option<&[u8]>, content: &[u8] }` for batch appends
+- `ReadDescriptor` — `{ read_fd: Arc<OwnedFd>, file_offset: u64, byte_size: usize }` for batch reads
+- `Record` — `{ header: Option<Bytes>, content: Bytes }` returned from reads
+- `CleanupResult` — `{ deleted: Vec<DeletedSegment>, live_count: u64, bytes_reclaimed: u64 }`
 
 ## File Format
 
-The WAL stores data in binary format with per-key segment sets:
+### Segment file header (16 bytes)
 
-- Each segment is named `{key}-{key_hash}-{sequence}.log` (e.g., `user-12345-0001.log`)
-- File header: `[NANO-LOG:8][sequence:8][expiration:8][key_length:8][key:N]`
-- Entry format: `[NANORC:6][header_length:2][header:H][content_length:8][content:M]`
-- Headers are optional and limited to 64KB maximum size
+```
+[NANO-LOG: 8 bytes][expiration_ms: 8 bytes LE]
+```
 
-## Thread Safety
+### Record format
 
-While the WAL struct itself is not `Sync`, it can be safely used in single-threaded contexts or wrapped in appropriate synchronization primitives (`Arc<Mutex<Wal>>`) for multi-threaded scenarios. Entry references (`EntryRef`) are `Copy` and can be safely shared between threads.
+```
+[NANORC: 6 bytes][header_len: 2 bytes LE][header: N bytes][content_len: 8 bytes LE][content: N bytes]
+```
 
-## Examples
+### Filename convention
 
-### Basic Usage
+```
+{prefix}_{expiration_ms}.seg
+```
+
+## Error Handling
 
 ```rust
-use nano_wal::{Wal, WalOptions, WalError};
-use bytes::Bytes;
+use nano_wal::WalError;
 
-fn main() -> Result<(), WalError> {
-    let mut wal = Wal::new("./example_wal", WalOptions::default())?;
-    
-    // Store some data and get references
-    let alice_ref = wal.append_entry("user:123", None, Bytes::from(r#"{"name": "Alice"}"#), false)?;
-    let bob_ref = wal.append_entry("user:456", None, Bytes::from(r#"{"name": "Bob"}"#), true)?;
-    
-    // Random access using references
-    let alice_data = wal.read_entry_at(alice_ref)?;
-    println!("Alice's data: {:?}", String::from_utf8_lossy(&alice_data));
-    
-    // Sequential access by key
-    let alice_records: Vec<Bytes> = wal.enumerate_records("user:123")?.collect();
-    println!("Alice's records: {:?}", alice_records);
-    
-    wal.shutdown()?;
-    Ok(())
+match result {
+    Err(WalError::Io(e)) => eprintln!("I/O error: {}", e),
+    Err(WalError::InvalidConfig(msg)) => eprintln!("Bad config: {}", msg),
+    Err(WalError::CorruptedData(msg)) => eprintln!("Corruption: {}", msg),
+    Err(WalError::HeaderTooLarge { size, max }) => eprintln!("Header {} > {}", size, max),
+    Err(WalError::Shutdown) => eprintln!("WAL is shut down"),
+    Ok(_) => {}
 }
-```
-
-### Event Sourcing with Batch Operations
-
-```rust
-use nano_wal::{Wal, WalOptions, EntryRef, WalError};
-use bytes::Bytes;
-use serde_json::json;
-
-fn store_events_batch(wal: &mut Wal, events: Vec<serde_json::Value>) -> Result<Vec<EntryRef>, WalError> {
-    let entries: Vec<_> = events.into_iter()
-        .map(|event| {
-            let entity_id = event["entity_id"].as_str().unwrap().to_string();
-            let event_data = Bytes::from(event.to_string());
-            let metadata = Some(Bytes::from(format!("timestamp:{}", event["timestamp"])));
-            (entity_id, metadata, event_data)
-        })
-        .collect();
-    
-    wal.append_batch(entries, true)
-}
-
-fn main() -> Result<(), WalError> {
-    let mut wal = Wal::new("./events", WalOptions::default())?;
-    
-    let events = vec![
-        json!({"entity_id": "order:123", "type": "created", "timestamp": 1000}),
-        json!({"entity_id": "order:123", "type": "paid", "timestamp": 1001}),
-        json!({"entity_id": "order:124", "type": "created", "timestamp": 1002}),
-    ];
-    
-    let refs = store_events_batch(&mut wal, events)?;
-    println!("Stored {} events", refs.len());
-    
-    wal.shutdown()?;
-    Ok(())
-}
-```
-
-### Headers for Metadata
-
-```rust
-use nano_wal::{Wal, WalOptions, WalError};
-use bytes::Bytes;
-
-fn main() -> Result<(), WalError> {
-    let mut wal = Wal::new("./header_example", WalOptions::default())?;
-    
-    // Store data with metadata headers
-    let user_data = Bytes::from(r#"{"name": "Alice", "age": 30}"#);
-    let metadata = Some(Bytes::from(r#"{"version": "1.0", "schema": "user"}"#));
-    
-    let user_ref = wal.append_entry("user:123", metadata, user_data, true)?;
-    
-    // Headers can be used for versioning, schemas, timestamps, or any metadata
-    let order_data = Bytes::from(r#"{"order_id": 12345, "amount": 99.99}"#);
-    let order_header = Some(Bytes::from(r#"{"content_type": "application/json"}"#));
-    
-    let order_ref = wal.log_entry("orders", order_header, order_data)?;
-    
-    wal.shutdown()?;
-    Ok(())
-}
-```
-
-## Included Examples
-
-The repository includes several comprehensive examples:
-
-### 1. Event Sourcing with CQRS (`examples/event_sourcing_cqrs.rs`)
-
-```bash
-cargo run --example event_sourcing_cqrs
-```
-
-### 2. Distributed Messaging System (`examples/distributed_messaging.rs`)
-
-```bash
-cargo run --example distributed_messaging
-```
-
-### 3. Real-time Analytics Pipeline (`examples/realtime_analytics.rs`)
-
-```bash
-cargo run --example realtime_analytics
-```
-
-### 4. Crash Durability Testing (`examples/crash_test_demo.rs`)
-
-```bash
-cargo run --example crash_test_demo
 ```
 
 ## Testing
 
-Run the test suite:
-
 ```bash
-# Run all tests
-cargo test
-
-# Run with crash tests
-cargo test --test crash_test
-
-# Run benchmarks
-cargo bench
+cargo test          # Unit + integration tests
+cargo clippy        # Lint checks
 ```
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## Changelog
-
-See [CHANGELOG.md](CHANGELOG.md) for a detailed history of changes.
-
-### v0.5.0 Highlights
-- Custom `WalError` type for better error handling
-- Batch operations for improved throughput
-- Performance benchmarks
-- Full compliance with Rust guidelines
-- Complete API documentation
+MIT License. See [LICENSE](LICENSE).
