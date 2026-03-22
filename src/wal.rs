@@ -11,6 +11,7 @@ use arc_swap::ArcSwap;
 use crate::segment::Segment;
 use crate::{WalError, Result};
 
+#[derive(Clone)]
 pub struct WalOptions {
     pub retention: Duration,
     pub segment_duration: Duration,
