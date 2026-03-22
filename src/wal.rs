@@ -317,7 +317,7 @@ impl Wal {
     }
 
     /// Parse an expiration timestamp from a segment filename matching this WAL's prefix.
-    fn parse_segment_filename(&self, filename: &str) -> Option<i64> {
+    pub(crate) fn parse_segment_filename(&self, filename: &str) -> Option<i64> {
         let stem = filename.strip_suffix(".seg")?;
         let after_prefix = stem.strip_prefix(&self.prefix)?.strip_prefix('_')?;
         after_prefix.parse::<i64>().ok()
