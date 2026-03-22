@@ -1,33 +1,20 @@
 [package]
 name = "nano-wal"
-version = "0.5.0"
+version = "1.0.0"
 edition = "2021"
 authors = ["Enzo Lombardi <enzinol@gmail.com>"]
-description = "A simple, lightweight Write-Ahead Log (WAL) implementation for append-only operations"
-documentation = "https://docs.rs/nano-wal"
-homepage = "https://github.com/aovestdipaperino/nano-wal"
-repository = "https://github.com/aovestdipaperino/nano-wal"
+description = "A concurrent Write-Ahead Log with CAS-based segment rotation and coalesced preadv reads"
 license = "MIT"
-keywords = ["wal", "write-ahead-log", "persistence", "database", "storage"]
-categories = ["database-implementations", "data-structures", "filesystem"]
+repository = "https://github.com/aovestdipaperino/nano-wal"
+documentation = "https://docs.rs/nano-wal"
 readme = "README.md"
-exclude = [
-    "test_wal*",
-    "*.marker",
-    "target/",
-]
+keywords = ["database", "storage", "wal", "write-ahead-log", "concurrent"]
+categories = ["database-implementations", "data-structures", "filesystem"]
 
 [dependencies]
-bytes = "1.10.1"
-chrono = { version = "0.4.41", features = ["serde"] }
+bytes = "1"
+arc-swap = "1"
+libc = "0.2"
 
 [dev-dependencies]
-tempfile = "3.0"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-uuid = { version = "1.0", features = ["v4"] }
-criterion = "0.5"
-
-[[bench]]
-name = "wal_benchmarks"
-harness = false
+tempfile = "3"
