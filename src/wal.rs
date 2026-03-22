@@ -291,6 +291,16 @@ impl Wal {
         Ok(refs)
     }
 
+    /// Read a single record at the given offset within a segment.
+    pub fn read_at(
+        &self,
+        segment: &Arc<crate::segment::Segment>,
+        file_offset: u64,
+        byte_size: usize,
+    ) -> Result<crate::read::Record> {
+        crate::read::read_single(segment.read_fd(), file_offset, byte_size)
+    }
+
     /// Accessor for the directory path (used by cleanup).
     pub(crate) fn dir(&self) -> &Path {
         &self.dir
