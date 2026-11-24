@@ -1,5 +1,7 @@
 # nano-wal
 
+[![GitHub stars](https://img.shields.io/github/stars/aovestdipaperino/nano-wal?logo=github&color=brightgreen)](https://github.com/aovestdipaperino/nano-wal/stargazers)
+
 ![nano-wal](nano-wal.png)
 
 A concurrent Write-Ahead Log (WAL) in Rust with lock-free segment rotation, vectored I/O, and coalesced batch reads. Designed for high-throughput, multi-threaded workloads where readers and writers must not block each other.
